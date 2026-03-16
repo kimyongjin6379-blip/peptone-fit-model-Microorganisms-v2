@@ -468,36 +468,60 @@ class KEGGVisualizer:
         return f"{r.get('genus', '')} {r.get('species', '')} {r.get('strain_name', '')}".strip()
 
     def _get_found_kos(self, strain_id: int) -> set[str]:
-        """Try to retrieve the raw KO list for this strain from cache."""
+        """Try to retrieve the raw KO list for this strain from cache.
+
+        Search order:
+        1. GCF-based KO list cache (from NCBI/KofamScan annotation)
+        2. KEGG API KO list cache (from KEGG REST API)
+        3. Fallback: reconstruct from pathway completeness (inaccurate)
+        """
         import json
-        from pathlib import Path
         from .utils import ensure_output_dir
 
         prior = self.prior_builder.get_prior(strain_id)
-        gcf = prior.get("gcf", "")
-        if not gcf:
-            return set()
-
         cache_dir = ensure_output_dir("genome_cache")
-        # Check for KO list file
-        ko_file = cache_dir / f"{gcf}_ko_list.json"
-        if ko_file.exists():
-            try:
-                with open(ko_file, "r") as f:
-                    return set(json.load(f))
-            except Exception:
-                pass
 
-        # Fall back: reconstruct from pathway completeness
-        # If a pathway is 100% complete, all KOs are present
+        # 1. Check GCF-based KO list
+        gcf = prior.get("gcf", "")
+        if gcf:
+            ko_file = cache_dir / f"{gcf}_ko_list.json"
+            if ko_file.exists():
+                try:
+                    with open(ko_file, "r") as f:
+                        return set(json.load(f))
+                except Exception:
+                    pass
+
+        # 2. Check KEGG API KO list
+        kegg_org = prior.get("kegg_org_code", "")
+        if kegg_org:
+            kegg_cache = ensure_output_dir("kegg_cache")
+            kegg_file = kegg_cache / f"{kegg_org}_ko_list.json"
+            if kegg_file.exists():
+                try:
+                    with open(kegg_file, "r") as f:
+                        return set(json.load(f))
+                except Exception:
+                    pass
+
+            # Also check genome_cache for kegg-sourced files
+            kegg_file2 = cache_dir / f"kegg_{kegg_org}_ko_list.json"
+            if kegg_file2.exists():
+                try:
+                    with open(kegg_file2, "r") as f:
+                        return set(json.load(f))
+                except Exception:
+                    pass
+
+        # 3. Fallback: reconstruct from pathway completeness (inaccurate)
         found = set()
         aa_synth = prior.get("aa_biosynthesis", {})
         for aa, comp in aa_synth.items():
             if aa in AA_BIOSYNTHESIS_KOS:
                 pathway = AA_BIOSYNTHESIS_KOS[aa]
-                essential_kos = pathway.get("essential_kos", [])
-                # If completeness > 0, assume proportional KOs found
-                n_found = int(round(comp * len(essential_kos)))
-                for ko in essential_kos[:n_found]:
+                all_kos = pathway.get("kos", [])
+                # Use ALL kos, not just essential, for better reconstruction
+                n_found = int(round(comp * len(all_kos)))
+                for ko in all_kos[:n_found]:
                     found.add(ko)
         return found

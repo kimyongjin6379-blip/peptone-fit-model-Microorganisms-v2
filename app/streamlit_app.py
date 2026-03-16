@@ -236,6 +236,48 @@ def render_strain_browser_tab():
         st.warning("검색 결과가 없습니다.")
 
     st.divider()
+    st.subheader("🧬 KEGG 온라인 KO 분석")
+    st.caption("KEGG REST API로 균주의 실제 KO annotation을 가져옵니다. 분석 후 KEGG 경로 탭에서 정확한 플로우차트를 볼 수 있습니다.")
+
+    strain_df = db.get_strain_df()
+    if not strain_df.empty:
+        kegg_options = {
+            f"{r['strain_id']}: {r['full_name']}": r["strain_id"]
+            for _, r in strain_df.iterrows()
+        }
+        kegg_selected = st.selectbox("KO 분석할 균주 선택", list(kegg_options.keys()), key="kegg_ann_strain")
+        kegg_strain_id = kegg_options[kegg_selected]
+
+        if st.button("🔬 KEGG KO 분석 실행", key="kegg_ann_btn"):
+            with st.spinner("KEGG REST API에서 KO annotation 가져오는 중... (10~30초 소요)"):
+                from peptomatch.genome_prior import GenomePriorBuilder
+                config = get_config()
+                prior_builder = GenomePriorBuilder(strain_df, config)
+                result = prior_builder.run_kegg_annotation(kegg_strain_id)
+
+            if "error" in result:
+                st.error(result["error"])
+                if "suggestion" in result:
+                    st.info(result["suggestion"])
+            else:
+                ko_count = result.get("ko_count", 0)
+                org_code = result.get("kegg_org_code", "N/A")
+                source = result.get("source", "")
+
+                st.success(f"✅ KEGG 분석 완료! {ko_count}개 KO annotation 확인 (organism: {org_code})")
+
+                # Show summary
+                aa_synth = result.get("aa_biosynthesis", {})
+                deficient = [(aa, v) for aa, v in sorted(aa_synth.items(), key=lambda x: x[1]) if v < 0.7]
+
+                if deficient:
+                    st.markdown("**주요 아미노산 결핍:**")
+                    for aa, val in deficient[:5]:
+                        st.write(f"  - {aa}: {val:.0%}")
+
+                st.info("🧪 KEGG 경로 탭에서 정확한 플로우차트를 확인하세요!")
+
+    st.divider()
     st.subheader("지원 Genus 목록 (Taxonomy Prior)")
     genera = list_supported_genera()
     st.write(", ".join(sorted(genera)))
@@ -413,6 +455,29 @@ def render_kegg_tab():
         return
 
     viz = KEGGVisualizer(strain_df, config)
+
+    # Show data source info
+    prior = viz.prior_builder.get_prior(strain_id)
+    source = prior.get("source", "unknown")
+    source_labels = {
+        "kegg_api": "🟢 KEGG REST API (실제 KO annotation)",
+        "gcf_annotation": "🟢 GCF Genome Annotation (KofamScan/GFF3)",
+        "taxonomy_fallback": "🟡 Taxonomy Prior (문헌 기반 추정값)",
+        "generic_default": "🔴 Generic Default (기본값)",
+    }
+    source_label = source_labels.get(source, f"⚪ {source}")
+    ko_count = prior.get("ko_count", 0)
+    org_code = prior.get("kegg_org_code", "")
+
+    info_text = f"**데이터 출처:** {source_label}"
+    if ko_count:
+        info_text += f"  |  **KO 수:** {ko_count}"
+    if org_code:
+        info_text += f"  |  **KEGG organism:** `{org_code}`"
+    if source == "taxonomy_fallback":
+        info_text += "\n\n💡 *균주 브라우저에서 'KEGG KO 분석'을 실행하면 실제 효소 데이터로 업그레이드됩니다.*"
+
+    st.info(info_text)
 
     # Overview heatmap
     st.subheader("경로 종합 Overview")

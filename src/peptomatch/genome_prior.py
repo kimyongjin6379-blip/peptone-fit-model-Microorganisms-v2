@@ -16,6 +16,7 @@ from .kegg_pathway import analyze_ko_annotations
 from .taxonomy_priors import get_taxonomy_prior
 from .ncbi_client import NCBIClient
 from .ko_annotator import KOAnnotator
+from .kegg_client import KEGGClient
 
 logger = logging.getLogger("peptomatch")
 
@@ -45,6 +46,9 @@ class GenomePriorBuilder:
             kofamscan_profiles=ann_cfg.get("kofamscan_profiles"),
         )
         self.annotation_strategy = ann_cfg.get("strategy", "auto")
+
+        # KEGG REST API client (works on Streamlit Cloud)
+        self.kegg_client = KEGGClient()
 
         self._load_cached_priors()
 
@@ -91,9 +95,15 @@ class GenomePriorBuilder:
 
         prior = None
 
-        # Try GCF-based prior first
+        species = strain_info.get("species", "")
+
+        # Try GCF-based prior first (NCBI download + KofamScan/GFF3)
         if gcf and pd.notna(gcf):
             prior = self._build_gcf_prior(gcf, strain_id, genus)
+
+        # Try KEGG REST API (works on Streamlit Cloud)
+        if prior is None and genus:
+            prior = self._build_kegg_prior(genus, species, strain_id)
 
         # Fall back to taxonomy prior
         if prior is None:
@@ -154,6 +164,86 @@ class GenomePriorBuilder:
         except Exception as e:
             logger.error(f"Failed to build GCF prior for {gcf}: {e}")
             return None
+
+    def _build_kegg_prior(
+        self, genus: str, species: str, strain_id: int
+    ) -> Optional[dict[str, Any]]:
+        """Build prior using KEGG REST API (online, no local tools needed)."""
+        # Check cache first
+        cache_file = self.cache_dir / f"kegg_{genus}_{species}_prior.json"
+        if cache_file.exists():
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    prior = json.load(f)
+                    logger.info(f"Loaded cached KEGG prior for {genus} {species}")
+                    return prior
+            except Exception:
+                pass
+
+        try:
+            ko_list, source, org_code = self.kegg_client.annotate_strain(genus, species)
+
+            if not ko_list:
+                logger.info(f"No KEGG data for {genus} {species}")
+                return None
+
+            prior = analyze_ko_annotations(ko_list)
+            prior["source"] = "kegg_api"
+            prior["genus"] = genus
+            prior["species"] = species
+            prior["kegg_org_code"] = org_code
+            prior["ko_count"] = len(ko_list)
+
+            # Save KO list for flowchart visualization
+            ko_list_file = self.cache_dir / f"kegg_{org_code}_ko_list.json"
+            with open(ko_list_file, "w") as f:
+                json.dump(ko_list, f)
+
+            # Save prior cache
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(prior, f, indent=2)
+
+            logger.info(
+                f"Built KEGG prior for {genus} {species}: "
+                f"{len(ko_list)} KOs via {org_code}"
+            )
+            return prior
+
+        except Exception as e:
+            logger.error(f"KEGG prior failed for {genus} {species}: {e}")
+            return None
+
+    def run_kegg_annotation(self, strain_id: int) -> dict[str, Any]:
+        """Explicitly run KEGG API annotation for a strain (called from UI).
+
+        Returns the updated prior dict with source info.
+        """
+        strain_row = self.strain_df[self.strain_df["strain_id"] == strain_id]
+        if strain_row.empty:
+            return {"error": "Strain not found"}
+
+        info = strain_row.iloc[0]
+        genus = info.get("genus", "")
+        species = info.get("species", "")
+
+        if not genus:
+            return {"error": "No genus information"}
+
+        # Force KEGG annotation
+        prior = self._build_kegg_prior(genus, species, strain_id)
+
+        if prior is None:
+            return {
+                "error": f"KEGG에 {genus} {species}에 해당하는 organism이 없습니다.",
+                "suggestion": "NCBI GFF3 annotation 또는 taxonomy prior를 사용합니다.",
+            }
+
+        # Update cached priors
+        prior["strain_id"] = strain_id
+        self.priors[strain_id] = prior
+        self.save_priors()
+
+        return prior
 
     def build_all_priors(self, use_gcf: bool = True, force_rebuild: bool = False) -> dict[int, dict]:
         total = len(self.strain_df)
