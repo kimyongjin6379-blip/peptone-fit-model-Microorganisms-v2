@@ -123,7 +123,7 @@ def render_recommend_tab():
         language = st.radio("언어", ["ko", "en"], horizontal=True)
         sempio_only = st.checkbox("Sempio 소재만", value=True)
 
-    if st.button("🔬 분석 시작", type="primary", use_container_width=True):
+    if st.button("🔬 분석 시작", type="primary", width="stretch"):
         with st.spinner("유전체 기반 분석 중..."):
             recommender = PeptoneRecommender(comp_df, strain_df, config)
             pf = config.get("peptone_filter") if sempio_only else None
@@ -165,7 +165,7 @@ def render_recommend_tab():
 
         display_df = recommendations[["rank", "peptone", "score", "explanation"]].copy()
         display_df.columns = ["순위", "펩톤", "점수", "추천 이유"]
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(display_df, width="stretch", hide_index=True)
 
         csv = recommendations.to_csv(index=False, encoding="utf-8-sig")
         st.download_button("📥 결과 다운로드 (CSV)", csv,
@@ -185,7 +185,7 @@ def render_strain_browser_tab():
         df = pd.DataFrame(strains)
         display_cols = ["strain_id", "genus", "species", "strain_name", "gcf_accession", "source"]
         available_cols = [c for c in display_cols if c in df.columns]
-        st.dataframe(df[available_cols], use_container_width=True, hide_index=True)
+        st.dataframe(df[available_cols], width="stretch", hide_index=True)
         st.caption(f"총 {len(strains)}개 균주")
     else:
         st.info("등록된 균주가 없습니다.")
@@ -285,7 +285,7 @@ def render_peptone_explorer_tab():
             st.subheader("요약 비교")
             summary = features.loc[selected_peptones, available].copy()
             summary.columns = [c.replace("_", " ").title() for c in summary.columns]
-            st.dataframe(summary, use_container_width=True)
+            st.dataframe(summary, width="stretch")
 
     elif len(selected_peptones) == 1:
         st.info("비교를 위해 2개 이상의 펩톤을 선택해주세요.")
@@ -297,7 +297,7 @@ def render_peptone_explorer_tab():
     available = [c for c in cols_to_show if c in features.columns]
     if available:
         st.dataframe(features[available].sort_values(available[0], ascending=False),
-                     use_container_width=True)
+                     width="stretch")
 
 
 # ── Tab 4: 균주 비교 ──────────────────────────────────────────────
@@ -334,7 +334,7 @@ def render_compare_tab():
     strain_ids = [strain_options[s] for s in selected_labels]
     sempio_only = st.checkbox("Sempio 소재만", value=True, key="compare_sempio")
 
-    if st.button("📊 비교 분석", type="primary", use_container_width=True):
+    if st.button("📊 비교 분석", type="primary", width="stretch"):
         with st.spinner("비교 분석 중..."):
             comparator = StrainComparator(comp_df, strain_df, config)
 
@@ -366,7 +366,7 @@ def render_compare_tab():
                     display = recs[["rank", "peptone", "score"]].copy()
                     display.columns = ["순위", "펩톤", "점수"]
                     display["점수"] = display["점수"].round(1)
-                    st.dataframe(display, use_container_width=True, hide_index=True)
+                    st.dataframe(display, width="stretch", hide_index=True)
 
             # 5. Demand profile table
             st.subheader("상세 요구도 비교")
@@ -376,8 +376,7 @@ def render_compare_tab():
             if aa_cols:
                 display_demand = demand_df[aa_cols].copy()
                 display_demand.columns = [c.replace("demand_", "") for c in display_demand.columns]
-                st.dataframe(display_demand.style.background_gradient(cmap="RdYlGn_r", vmin=0, vmax=1),
-                             use_container_width=True)
+                st.dataframe(display_demand, width="stretch")
 
 
 # ── Tab 5: KEGG 경로 ──────────────────────────────────────────────
@@ -401,7 +400,7 @@ def render_kegg_tab():
     selected = st.selectbox("균주 선택", options=list(strain_options.keys()), key="kegg_strain")
     strain_id = strain_options[selected]
 
-    if st.button("🔬 경로 분석", type="primary", key="kegg_btn", use_container_width=True):
+    if st.button("🔬 경로 분석", type="primary", key="kegg_btn", width="stretch"):
         with st.spinner("KEGG 경로 분석 중..."):
             viz = KEGGVisualizer(strain_df, config)
 
@@ -474,7 +473,7 @@ def render_pdf_tab():
         if cached_sid == strain_id:
             st.success("💡 '펩톤 추천' 탭의 분석 결과를 재사용합니다.")
 
-    if st.button("📄 PDF 생성", type="primary", use_container_width=True):
+    if st.button("📄 PDF 생성", type="primary", width="stretch"):
         with st.spinner("PDF 리포트 생성 중..."):
             # Generate recommendations (or reuse cached)
             if has_cached and st.session_state.get("last_strain_id") == strain_id:
@@ -530,7 +529,7 @@ def render_pdf_tab():
                 file_name=filename,
                 mime="application/pdf",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
 
             st.success(f"PDF 리포트가 준비되었습니다! ({len(pdf_bytes)/1024:.1f} KB)")
