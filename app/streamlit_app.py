@@ -432,7 +432,7 @@ def render_kegg_tab():
                     for aa in worst_3:
                         try:
                             detail_fig = viz.pathway_detail_chart(strain_id, aa)
-                            st.plotly_chart(detail_fig, use_container_width=True)
+                            st.plotly_chart(detail_fig, use_container_width=True, key=f"flow_aa_{aa}")
                         except Exception as e:
                             st.warning(f"{aa} 경로 상세를 표시할 수 없습니다: {e}")
 
@@ -445,7 +445,7 @@ def render_kegg_tab():
                     for vit in worst_vit:
                         try:
                             vit_detail = viz.pathway_detail_chart(strain_id, vit, pathway_source="vitamin")
-                            st.plotly_chart(vit_detail, use_container_width=True)
+                            st.plotly_chart(vit_detail, use_container_width=True, key=f"flow_vit_{vit}")
                         except Exception as e:
                             st.warning(f"비타민 {vit} 경로 상세를 표시할 수 없습니다: {e}")
 
@@ -462,14 +462,14 @@ def render_kegg_tab():
             if selected_aa:
                 try:
                     explore_fig = viz.pathway_detail_chart(strain_id, selected_aa)
-                    st.plotly_chart(explore_fig, use_container_width=True)
+                    st.plotly_chart(explore_fig, use_container_width=True, key=f"explore_flow_aa_{selected_aa}")
                 except Exception as e:
                     st.warning(f"경로를 표시할 수 없습니다: {e}")
 
             if selected_vit and selected_vit != "(선택 안 함)":
                 try:
                     explore_vit_fig = viz.pathway_detail_chart(strain_id, selected_vit, pathway_source="vitamin")
-                    st.plotly_chart(explore_vit_fig, use_container_width=True)
+                    st.plotly_chart(explore_vit_fig, use_container_width=True, key=f"explore_flow_vit_{selected_vit}")
                 except Exception as e:
                     st.warning(f"비타민 경로를 표시할 수 없습니다: {e}")
 
