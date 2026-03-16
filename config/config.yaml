@@ -1,0 +1,47 @@
+data:
+  composition_file: "data/composition_template.xlsx"
+  composition_sheet: "data"
+  strain_file: "data/신사업1팀 균주 리스트 (2024 ver.).xlsx"
+
+peptone_filter:
+  - "SOY-1"
+  - "SOY-N+"
+  - "SOY-L"
+  - "SOY-P"
+  - "WHEAT-1"
+  - "PEA-1"
+  - "RICE-1"
+  - "SOY-BIO"
+  - "SOY-BIO N50"
+  - "WHEAT-BIO"
+  - "PEA-BIO"
+  - "RICE-BIO"
+  - "PPR Type2"
+  - "PPR Type3"
+  - "PPR Type4"
+  - "Fish Collagen"
+
+data_processing:
+  non_numeric_handling: "zero"
+  default_loq: 0.1
+
+weights:
+  faa_abundance: 1.0
+  taa_abundance: 0.8
+  mw_low: 1.2
+  mw_medium: 1.0
+  mw_high: 0.6
+  vitamin_b: 0.5
+  nucleotides: 0.4
+  aa_biosynthesis_gap: 1.5
+  transporter_bonus: 0.5
+
+ncbi:
+  email: "sempio_biotech@sempio.com"
+  rate_limit_delay: 0.34
+  cache_dir: "data/ncbi_cache"
+
+annotation:
+  strategy: "auto"  # auto, kofamscan, gff3, taxonomy
+  kofamscan_path: null  # set if KofamScan is installed
+  kofamscan_profiles: null  # path to KOfam HMM profiles
