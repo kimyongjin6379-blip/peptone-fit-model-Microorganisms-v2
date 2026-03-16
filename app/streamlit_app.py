@@ -400,78 +400,89 @@ def render_kegg_tab():
     selected = st.selectbox("균주 선택", options=list(strain_options.keys()), key="kegg_strain")
     strain_id = strain_options[selected]
 
+    # Use session_state to persist analysis results across reruns
     if st.button("🔬 경로 분석", type="primary", key="kegg_btn", width="stretch"):
-        with st.spinner("KEGG 경로 분석 중..."):
-            viz = KEGGVisualizer(strain_df, config)
+        st.session_state["kegg_analyzed"] = True
+        st.session_state["kegg_strain_id"] = strain_id
 
-            # Overview heatmap
-            st.subheader("경로 종합 Overview")
-            overview_fig = viz.overview_chart(strain_id)
-            st.plotly_chart(overview_fig, use_container_width=True)
+    # Reset if strain changed after analysis
+    if st.session_state.get("kegg_analyzed") and st.session_state.get("kegg_strain_id") != strain_id:
+        st.session_state["kegg_analyzed"] = False
 
-            # AA biosynthesis bar chart
-            st.subheader("아미노산 생합성 완성도")
-            aa_fig = viz.aa_pathway_chart(strain_id)
-            st.plotly_chart(aa_fig, use_container_width=True)
+    if not st.session_state.get("kegg_analyzed"):
+        return
 
-            # Vitamin chart
-            st.subheader("비타민 생합성 완성도")
-            vit_fig = viz.vitamin_chart(strain_id)
-            st.plotly_chart(vit_fig, use_container_width=True)
+    viz = KEGGVisualizer(strain_df, config)
 
-            # Pathway detail flowcharts for most deficient AAs
-            prior = viz.prior_builder.get_prior(strain_id)
-            aa_synth = prior.get("aa_biosynthesis", {})
-            if aa_synth:
-                sorted_aa = sorted(aa_synth.items(), key=lambda x: x[1])
-                worst_3 = [aa for aa, val in sorted_aa[:3] if val < 0.8]
+    # Overview heatmap
+    st.subheader("경로 종합 Overview")
+    overview_fig = viz.overview_chart(strain_id)
+    st.plotly_chart(overview_fig, use_container_width=True, key="kegg_overview")
 
-                if worst_3:
-                    st.subheader("🔬 주요 결핍 아미노산 경로 플로우차트")
-                    st.caption("각 효소를 박스로 표시하고 화살표로 연결합니다. 초록=존재, 빨강=결핍, ★=핵심 효소")
-                    for aa in worst_3:
-                        try:
-                            detail_fig = viz.pathway_detail_chart(strain_id, aa)
-                            st.plotly_chart(detail_fig, use_container_width=True, key=f"flow_aa_{aa}")
-                        except Exception as e:
-                            st.warning(f"{aa} 경로 상세를 표시할 수 없습니다: {e}")
+    # AA biosynthesis bar chart
+    st.subheader("아미노산 생합성 완성도")
+    aa_fig = viz.aa_pathway_chart(strain_id)
+    st.plotly_chart(aa_fig, use_container_width=True, key="kegg_aa_bar")
 
-            # Vitamin pathway flowcharts for deficient vitamins
-            vit_synth = prior.get("vitamin_biosynthesis", {})
-            if vit_synth:
-                worst_vit = [v for v, val in sorted(vit_synth.items(), key=lambda x: x[1]) if val < 0.8][:3]
-                if worst_vit:
-                    st.subheader("🔬 주요 결핍 비타민 경로 플로우차트")
-                    for vit in worst_vit:
-                        try:
-                            vit_detail = viz.pathway_detail_chart(strain_id, vit, pathway_source="vitamin")
-                            st.plotly_chart(vit_detail, use_container_width=True, key=f"flow_vit_{vit}")
-                        except Exception as e:
-                            st.warning(f"비타민 {vit} 경로 상세를 표시할 수 없습니다: {e}")
+    # Vitamin chart
+    st.subheader("비타민 생합성 완성도")
+    vit_fig = viz.vitamin_chart(strain_id)
+    st.plotly_chart(vit_fig, use_container_width=True, key="kegg_vit_bar")
 
-            # Interactive pathway explorer
-            st.subheader("🗺️ 경로 탐색기")
-            explore_col1, explore_col2 = st.columns(2)
-            with explore_col1:
-                aa_list = list(sorted(aa_synth.keys()))
-                selected_aa = st.selectbox("아미노산 경로 선택", aa_list, key="explore_aa")
-            with explore_col2:
-                vit_list = list(sorted(vit_synth.keys())) if vit_synth else []
-                selected_vit = st.selectbox("비타민 경로 선택", ["(선택 안 함)"] + vit_list, key="explore_vit")
+    # Pathway detail flowcharts for most deficient AAs
+    prior = viz.prior_builder.get_prior(strain_id)
+    aa_synth = prior.get("aa_biosynthesis", {})
+    if aa_synth:
+        sorted_aa = sorted(aa_synth.items(), key=lambda x: x[1])
+        worst_3 = [aa for aa, val in sorted_aa[:3] if val < 0.8]
 
-            if selected_aa:
+        if worst_3:
+            st.subheader("🔬 주요 결핍 아미노산 경로 플로우차트")
+            st.caption("각 효소를 박스로 표시하고 화살표로 연결합니다. 초록=존재, 빨강=결핍, ★=핵심 효소")
+            for aa in worst_3:
                 try:
-                    explore_fig = viz.pathway_detail_chart(strain_id, selected_aa)
-                    st.plotly_chart(explore_fig, use_container_width=True, key=f"explore_flow_aa_{selected_aa}")
+                    detail_fig = viz.pathway_detail_chart(strain_id, aa)
+                    st.plotly_chart(detail_fig, use_container_width=True, key=f"flow_aa_{aa}")
                 except Exception as e:
-                    st.warning(f"경로를 표시할 수 없습니다: {e}")
+                    st.warning(f"{aa} 경로 상세를 표시할 수 없습니다: {e}")
 
-            if selected_vit and selected_vit != "(선택 안 함)":
+    # Vitamin pathway flowcharts for deficient vitamins
+    vit_synth = prior.get("vitamin_biosynthesis", {})
+    if vit_synth:
+        worst_vit = [v for v, val in sorted(vit_synth.items(), key=lambda x: x[1]) if val < 0.8][:3]
+        if worst_vit:
+            st.subheader("🔬 주요 결핍 비타민 경로 플로우차트")
+            for vit in worst_vit:
                 try:
-                    explore_vit_fig = viz.pathway_detail_chart(strain_id, selected_vit, pathway_source="vitamin")
-                    st.plotly_chart(explore_vit_fig, use_container_width=True, key=f"explore_flow_vit_{selected_vit}")
+                    vit_detail = viz.pathway_detail_chart(strain_id, vit, pathway_source="vitamin")
+                    st.plotly_chart(vit_detail, use_container_width=True, key=f"flow_vit_{vit}")
                 except Exception as e:
-                    st.warning(f"비타민 경로를 표시할 수 없습니다: {e}")
+                    st.warning(f"비타민 {vit} 경로 상세를 표시할 수 없습니다: {e}")
+
+    # Interactive pathway explorer (persists across reruns)
+    st.divider()
+    st.subheader("🗺️ 경로 탐색기")
+    explore_col1, explore_col2 = st.columns(2)
+    with explore_col1:
+        aa_list = list(sorted(aa_synth.keys()))
+        selected_aa = st.selectbox("아미노산 경로 선택", aa_list, key="explore_aa")
+    with explore_col2:
+        vit_list = list(sorted(vit_synth.keys())) if vit_synth else []
+        selected_vit = st.selectbox("비타민 경로 선택", ["(선택 안 함)"] + vit_list, key="explore_vit")
+
+    if selected_aa:
+        try:
+            explore_fig = viz.pathway_detail_chart(strain_id, selected_aa)
+            st.plotly_chart(explore_fig, use_container_width=True, key=f"explore_flow_aa_{selected_aa}")
+        except Exception as e:
+            st.warning(f"경로를 표시할 수 없습니다: {e}")
+
+    if selected_vit and selected_vit != "(선택 안 함)":
+        try:
+            explore_vit_fig = viz.pathway_detail_chart(strain_id, selected_vit, pathway_source="vitamin")
+            st.plotly_chart(explore_vit_fig, use_container_width=True, key=f"explore_flow_vit_{selected_vit}")
+        except Exception as e:
+            st.warning(f"비타민 경로를 표시할 수 없습니다: {e}")
 
 
 # ── Tab 6: PDF 리포트 ─────────────────────────────────────────────
