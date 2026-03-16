@@ -166,11 +166,13 @@ class PeptoneRecommender:
         nucleotide_score = supply.get("supply_nucleotide", 0) * nucleotide_demand * w["nucleotides"]
         components["nucleotides"] = nucleotide_score
 
-        # 4. AA-specific matching (supply essential AAs the strain can't make)
-        essential_aa = ["His", "Ile", "Leu", "Lys", "Met", "Phe", "Thr", "Trp", "Val"]
+        # 4. AA-specific matching (supply AAs the strain can't make)
+        all_aa = ["His", "Ile", "Leu", "Lys", "Met", "Phe", "Thr", "Trp", "Val",
+                  "Ala", "Arg", "Asn", "Asp", "Cys", "Glu", "Gln", "Gly", "Pro", "Ser", "Tyr"]
         aa_match_score = 0
+        aa_count = 0
 
-        for aa in essential_aa:
+        for aa in all_aa:
             supply_key = f"supply_{aa}"
             demand_key = f"demand_{aa}"
 
@@ -178,8 +180,10 @@ class PeptoneRecommender:
                 # High demand + high supply = good match
                 aa_match = supply[supply_key] * demand[demand_key]
                 aa_match_score += aa_match
+                aa_count += 1
 
-        aa_match_score = (aa_match_score / len(essential_aa)) * w["aa_match"]
+        if aa_count > 0:
+            aa_match_score = (aa_match_score / aa_count) * w["aa_match"]
         components["aa_match"] = aa_match_score
 
         # 5. Transporter bonus for peptide-rich peptones

@@ -437,9 +437,10 @@ class CompositionFeatureExtractor:
             else:
                 scores["supply_nucleotide"] = 0
 
-        # Individual essential AA scores (for specific deficiency matching)
-        essential_aa = ["His", "Ile", "Leu", "Lys", "Met", "Phe", "Thr", "Trp", "Val"]
-        for aa in essential_aa:
+        # Individual AA scores (for specific deficiency matching)
+        all_aa = ["His", "Ile", "Leu", "Lys", "Met", "Phe", "Thr", "Trp", "Val",
+                  "Ala", "Arg", "Asn", "Asp", "Cys", "Glu", "Gln", "Gly", "Pro", "Ser", "Tyr"]
+        for aa in all_aa:
             faa_col = f"faa_{aa}"
             if faa_col in features.columns:
                 aa_max = features[faa_col].max()

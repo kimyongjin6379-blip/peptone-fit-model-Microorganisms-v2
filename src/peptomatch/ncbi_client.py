@@ -61,13 +61,21 @@ class NCBIClient:
             List of assembly info dicts
         """
         self._rate_limit()
-        url = f"{DATASETS_BASE}/genome/taxon/{requests.utils.quote(taxon)}"
+        url = f"{DATASETS_BASE}/genome/taxon/{requests.utils.quote(taxon)}/dataset_report"
+
+        # Map user-friendly level names to API filter values
+        level_map = {
+            "complete_genome": "complete_genome",
+            "chromosome": "chromosome",
+            "scaffold": "scaffold",
+            "contig": "contig",
+        }
 
         params: dict[str, Any] = {
             "page_size": min(limit, 100),
         }
         if assembly_level:
-            params["filters.assembly_level"] = assembly_level
+            params["filters.assembly_level"] = level_map.get(assembly_level, assembly_level)
         if refseq_only:
             params["filters.assembly_source"] = "refseq"
 
@@ -92,7 +100,7 @@ class NCBIClient:
                 "assembly_level": info.get("assembly_level", ""),
                 "assembly_name": info.get("assembly_name", ""),
                 "refseq_category": info.get("refseq_category", ""),
-                "genome_size": stats.get("total_sequence_length", 0),
+                "genome_size": int(stats.get("total_sequence_length", 0) or 0),
                 "gc_percent": stats.get("gc_percent", 0),
                 "gene_count": stats.get("total_number_of_chromosomes", 0),
             })
@@ -103,7 +111,7 @@ class NCBIClient:
     def get_assembly_info(self, accession: str) -> Optional[dict[str, Any]]:
         """Get details for a specific assembly accession."""
         self._rate_limit()
-        url = f"{DATASETS_BASE}/genome/accession/{accession}"
+        url = f"{DATASETS_BASE}/genome/accession/{accession}/dataset_report"
 
         try:
             resp = self.session.get(url, timeout=30)

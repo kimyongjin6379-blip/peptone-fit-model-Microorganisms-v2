@@ -120,14 +120,15 @@ class RecommendationExplainer:
 
         # 1. Check AA deficiencies and matching supplies
         aa_synth = prior.get("aa_biosynthesis", {})
-        essential_aa = ["His", "Ile", "Leu", "Lys", "Met", "Phe", "Thr", "Trp", "Val"]
+        all_aa = ["His", "Ile", "Leu", "Lys", "Met", "Phe", "Thr", "Trp", "Val",
+                  "Ala", "Arg", "Asn", "Asp", "Cys", "Glu", "Gln", "Gly", "Pro", "Ser", "Tyr"]
 
-        for aa in essential_aa:
+        for aa in all_aa:
             completeness = aa_synth.get(aa, 0.5)
             supply_score = supply.get(f"supply_{aa}", 0)
 
-            # If deficient and peptone supplies it
-            if completeness < 0.4 and supply_score > 0.3:
+            # If deficient (< 70%) and peptone supplies it
+            if completeness < 0.7 and supply_score > 0.2:
                 impact = (1 - completeness) * supply_score
                 reasons.append({
                     "type": "aa_deficiency",

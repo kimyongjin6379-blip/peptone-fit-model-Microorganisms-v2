@@ -178,6 +178,38 @@ class StrainDB:
         logger.info(f"Added {len(added)} strains from NCBI search '{taxon}'")
         return added
 
+    def add_assemblies(self, assemblies: list[dict], source_label: str = "ncbi_search") -> list[dict]:
+        """Add specific assembly dicts to the DB. Returns list of newly added strains."""
+        added = []
+        for asm in assemblies:
+            accession = asm.get("accession", "")
+            organism = asm.get("organism_name", "")
+
+            cur = self.conn.execute(
+                "SELECT strain_id FROM strains WHERE gcf_accession = ?", (accession,)
+            )
+            if cur.fetchone():
+                continue
+
+            parts = organism.split()
+            genus = parts[0] if parts else ""
+            species = parts[1] if len(parts) > 1 else ""
+            strain_name = " ".join(parts[2:]) if len(parts) > 2 else ""
+
+            sid = self.add_strain(
+                genus=genus, species=species, strain_name=strain_name,
+                gcf=accession,
+                assembly_level=asm.get("assembly_level", ""),
+                source=source_label,
+                taxonomy_id=str(asm.get("tax_id", "")),
+            )
+            if sid > 0:
+                added.append({"strain_id": sid, "genus": genus, "species": species,
+                              "strain_name": strain_name, "GCF": accession})
+
+        logger.info(f"Added {len(added)} strains to DB")
+        return added
+
     def get_strain_df(self) -> pd.DataFrame:
         """Export as DataFrame compatible with existing scoring code."""
         rows = self.get_all()

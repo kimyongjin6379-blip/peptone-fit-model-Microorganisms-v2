@@ -21,6 +21,8 @@ from peptomatch.explain import RecommendationExplainer
 from peptomatch.strain_db import StrainDB
 from peptomatch.ncbi_client import NCBIClient
 from peptomatch.taxonomy_priors import list_supported_genera
+from peptomatch.compare import StrainComparator
+from peptomatch.kegg_viz import KEGGVisualizer
 
 st.set_page_config(
     page_title="PeptoMatch",
@@ -71,20 +73,30 @@ def main():
     st.title("🧬 PeptoMatch")
     st.caption("Genome-driven Peptone Recommendation System")
 
-    tab1, tab2, tab3 = st.tabs(["🎯 펩톤 추천", "🔍 균주 브라우저", "📊 펩톤 탐색기"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🎯 펩톤 추천",
+        "🔍 균주 브라우저",
+        "📊 펩톤 탐색기",
+        "⚖️ 균주 비교",
+        "🧪 KEGG 경로",
+        "📄 PDF 리포트",
+    ])
 
-    # ── Tab 1: Peptone Recommendation ─────────────────────────────────
     with tab1:
         render_recommend_tab()
-
-    # ── Tab 2: Strain Browser ─────────────────────────────────────────
     with tab2:
         render_strain_browser_tab()
-
-    # ── Tab 3: Peptone Explorer ───────────────────────────────────────
     with tab3:
         render_peptone_explorer_tab()
+    with tab4:
+        render_compare_tab()
+    with tab5:
+        render_kegg_tab()
+    with tab6:
+        render_pdf_tab()
 
+
+# ── Tab 1: 펩톤 추천 ───────────────────────────────────────────────
 
 def render_recommend_tab():
     config = get_config()
@@ -99,7 +111,6 @@ def render_recommend_tab():
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        # Strain selection
         strain_options = {
             f"{r['strain_id']}: {r['full_name']}": r["strain_id"]
             for _, r in strain_df.iterrows()
@@ -120,9 +131,12 @@ def render_recommend_tab():
 
             explainer = RecommendationExplainer(comp_df, strain_df, config, language=language)
             recommendations = explainer.explain_batch(strain_id, recommendations, top_n_reasons=3)
-
-            # Strain summary
             summary = explainer.get_strain_summary(strain_id)
+
+        # Store for PDF tab reuse
+        st.session_state["last_recommendations"] = recommendations
+        st.session_state["last_summary"] = summary
+        st.session_state["last_strain_id"] = strain_id
 
         # Display results
         st.subheader("균주 영양 프로파일")
@@ -139,7 +153,6 @@ def render_recommend_tab():
 
         st.subheader(f"Top-{top_k} 펩톤 추천")
 
-        # Score bar chart
         fig = px.bar(
             recommendations,
             x="peptone", y="score",
@@ -150,16 +163,16 @@ def render_recommend_tab():
         fig.update_layout(height=400, showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # Detailed table
         display_df = recommendations[["rank", "peptone", "score", "explanation"]].copy()
         display_df.columns = ["순위", "펩톤", "점수", "추천 이유"]
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-        # Download
         csv = recommendations.to_csv(index=False, encoding="utf-8-sig")
         st.download_button("📥 결과 다운로드 (CSV)", csv,
                            f"peptomatch_strain{strain_id}.csv", "text/csv")
 
+
+# ── Tab 2: 균주 브라우저 ───────────────────────────────────────────
 
 def render_strain_browser_tab():
     config = get_config()
@@ -192,27 +205,43 @@ def render_strain_browser_tab():
         client = get_ncbi_client()
         with st.spinner(f"NCBI에서 '{taxon}' 검색 중..."):
             results = client.search_assemblies(taxon=taxon, assembly_level=level, limit=limit)
+        st.session_state["ncbi_results"] = results
 
-        if results:
-            results_df = pd.DataFrame(results)
-            results_df["genome_size_mb"] = results_df["genome_size"] / 1_000_000
-            st.dataframe(
-                results_df[["accession", "organism_name", "assembly_level", "genome_size_mb"]],
-                use_container_width=True, hide_index=True,
-            )
+    results = st.session_state.get("ncbi_results", [])
 
-            if st.button("📥 로컬 DB에 추가", type="primary"):
-                added = db.expand_from_ncbi(taxon, client, assembly_level=level, max_results=limit)
+    if results:
+        st.markdown(f"**{len(results)}건 검색됨** — 추가할 균주를 선택하세요:")
+
+        selected_indices = []
+        for i, r in enumerate(results):
+            already = db.conn.execute(
+                "SELECT 1 FROM strains WHERE gcf_accession = ?", (r["accession"],)
+            ).fetchone()
+            label = f"`{r['accession']}` — {r['organism_name']} ({r['genome_size']/1_000_000:.2f} Mb)"
+            if already:
+                st.checkbox(label, value=False, disabled=True, key=f"ncbi_{i}",
+                            help="이미 DB에 존재")
+            else:
+                if st.checkbox(label, value=True, key=f"ncbi_{i}"):
+                    selected_indices.append(i)
+
+        if selected_indices:
+            if st.button(f"📥 선택한 {len(selected_indices)}개 균주 추가", type="primary"):
+                selected_assemblies = [results[i] for i in selected_indices]
+                added = db.add_assemblies(selected_assemblies)
                 st.success(f"{len(added)}개 균주가 추가되었습니다!")
+                del st.session_state["ncbi_results"]
                 st.rerun()
-        else:
-            st.warning("검색 결과가 없습니다.")
+    elif "ncbi_results" in st.session_state:
+        st.warning("검색 결과가 없습니다.")
 
     st.divider()
     st.subheader("지원 Genus 목록 (Taxonomy Prior)")
     genera = list_supported_genera()
     st.write(", ".join(sorted(genera)))
 
+
+# ── Tab 3: 펩톤 탐색기 ────────────────────────────────────────────
 
 def render_peptone_explorer_tab():
     comp_df = get_composition_df()
@@ -222,15 +251,17 @@ def render_peptone_explorer_tab():
 
     st.subheader("펩톤 성분 비교")
 
-    # Filter option
     sempio_filter = config.get("peptone_filter", [])
     show_sempio_only = st.checkbox("Sempio 소재만 표시", value=True, key="explorer_filter")
-    peptone_list = [p for p in features.index.tolist() if p in sempio_filter] if (show_sempio_only and sempio_filter) else features.index.tolist()
+    peptone_list = (
+        [p for p in features.index.tolist() if p in sempio_filter]
+        if (show_sempio_only and sempio_filter)
+        else features.index.tolist()
+    )
 
     selected_peptones = st.multiselect("비교할 펩톤 선택 (2-5개)", peptone_list, default=peptone_list[:3])
 
     if len(selected_peptones) >= 2:
-        # FAA comparison
         faa_cols = [c for c in features.columns if c.startswith("faa_") and c != "faa_total" and c != "faa_mean"]
         if faa_cols:
             faa_data = features.loc[selected_peptones, faa_cols].T
@@ -248,7 +279,6 @@ def render_peptone_explorer_tab():
             fig.update_layout(height=500)
             st.plotly_chart(fig, use_container_width=True)
 
-        # Summary table
         summary_cols = ["faa_total", "taa_total", "mw_avg", "mw_pct_low", "vitamin_total", "nucleotide_total"]
         available = [c for c in summary_cols if c in features.columns]
         if available:
@@ -260,7 +290,6 @@ def render_peptone_explorer_tab():
     elif len(selected_peptones) == 1:
         st.info("비교를 위해 2개 이상의 펩톤을 선택해주세요.")
 
-    # Full composition table
     st.divider()
     st.subheader("전체 펩톤 성분 데이터")
 
@@ -269,6 +298,242 @@ def render_peptone_explorer_tab():
     if available:
         st.dataframe(features[available].sort_values(available[0], ascending=False),
                      use_container_width=True)
+
+
+# ── Tab 4: 균주 비교 ──────────────────────────────────────────────
+
+def render_compare_tab():
+    config = get_config()
+    comp_df = get_composition_df()
+    db = get_strain_db()
+    strain_df = db.get_strain_df()
+
+    if strain_df.empty:
+        st.warning("균주 데이터가 없습니다.")
+        return
+
+    st.subheader("⚖️ 균주 간 비교 분석")
+    st.caption("2~4개 균주를 선택하여 영양 요구도와 펩톤 매칭을 비교합니다.")
+
+    strain_options = {
+        f"{r['strain_id']}: {r['full_name']}": r["strain_id"]
+        for _, r in strain_df.iterrows()
+    }
+
+    selected_labels = st.multiselect(
+        "비교할 균주 선택 (2-4개)",
+        options=list(strain_options.keys()),
+        max_selections=4,
+        key="compare_strains",
+    )
+
+    if len(selected_labels) < 2:
+        st.info("비교를 위해 2개 이상의 균주를 선택하세요.")
+        return
+
+    strain_ids = [strain_options[s] for s in selected_labels]
+    sempio_only = st.checkbox("Sempio 소재만", value=True, key="compare_sempio")
+
+    if st.button("📊 비교 분석", type="primary", use_container_width=True):
+        with st.spinner("비교 분석 중..."):
+            comparator = StrainComparator(comp_df, strain_df, config)
+
+            # 1. Radar chart
+            st.subheader("아미노산 요구도 비교")
+            radar_fig = comparator.radar_chart(strain_ids)
+            st.plotly_chart(radar_fig, use_container_width=True)
+
+            # 2. Heatmap
+            st.subheader("영양소 요구도 히트맵")
+            heatmap_fig = comparator.heatmap_chart(strain_ids)
+            st.plotly_chart(heatmap_fig, use_container_width=True)
+
+            # 3. Recommendation comparison
+            st.subheader("펩톤 추천 비교")
+            pf = config.get("peptone_filter") if sempio_only else None
+            recs_by_strain = comparator.compare_recommendations(
+                strain_ids, top_k=5, peptone_filter=pf
+            )
+
+            score_fig = comparator.score_comparison_chart(recs_by_strain)
+            st.plotly_chart(score_fig, use_container_width=True)
+
+            # 4. Side-by-side tables
+            cols = st.columns(len(strain_ids))
+            for col, (label, recs) in zip(cols, recs_by_strain.items()):
+                with col:
+                    st.markdown(f"**{label}**")
+                    display = recs[["rank", "peptone", "score"]].copy()
+                    display.columns = ["순위", "펩톤", "점수"]
+                    display["점수"] = display["점수"].round(1)
+                    st.dataframe(display, use_container_width=True, hide_index=True)
+
+            # 5. Demand profile table
+            st.subheader("상세 요구도 비교")
+            demand_df = comparator.compare_demand(strain_ids)
+            # Show only AA demands
+            aa_cols = [c for c in demand_df.columns if c.startswith("demand_") and "vitamin" not in c and "nucleotide" not in c]
+            if aa_cols:
+                display_demand = demand_df[aa_cols].copy()
+                display_demand.columns = [c.replace("demand_", "") for c in display_demand.columns]
+                st.dataframe(display_demand.style.background_gradient(cmap="RdYlGn_r", vmin=0, vmax=1),
+                             use_container_width=True)
+
+
+# ── Tab 5: KEGG 경로 ──────────────────────────────────────────────
+
+def render_kegg_tab():
+    config = get_config()
+    db = get_strain_db()
+    strain_df = db.get_strain_df()
+
+    if strain_df.empty:
+        st.warning("균주 데이터가 없습니다.")
+        return
+
+    st.subheader("🧪 KEGG 생합성 경로 시각화")
+    st.caption("균주의 아미노산·비타민 생합성 경로 완성도를 시각화합니다.")
+
+    strain_options = {
+        f"{r['strain_id']}: {r['full_name']}": r["strain_id"]
+        for _, r in strain_df.iterrows()
+    }
+    selected = st.selectbox("균주 선택", options=list(strain_options.keys()), key="kegg_strain")
+    strain_id = strain_options[selected]
+
+    if st.button("🔬 경로 분석", type="primary", key="kegg_btn", use_container_width=True):
+        with st.spinner("KEGG 경로 분석 중..."):
+            viz = KEGGVisualizer(strain_df, config)
+
+            # Overview heatmap
+            st.subheader("경로 종합 Overview")
+            overview_fig = viz.overview_chart(strain_id)
+            st.plotly_chart(overview_fig, use_container_width=True)
+
+            # AA biosynthesis bar chart
+            st.subheader("아미노산 생합성 완성도")
+            aa_fig = viz.aa_pathway_chart(strain_id)
+            st.plotly_chart(aa_fig, use_container_width=True)
+
+            # Vitamin chart
+            st.subheader("비타민 생합성 완성도")
+            vit_fig = viz.vitamin_chart(strain_id)
+            st.plotly_chart(vit_fig, use_container_width=True)
+
+            # Pathway detail for most deficient AA
+            prior = viz.prior_builder.get_prior(strain_id)
+            aa_synth = prior.get("aa_biosynthesis", {})
+            if aa_synth:
+                sorted_aa = sorted(aa_synth.items(), key=lambda x: x[1])
+                worst_3 = [aa for aa, val in sorted_aa[:3] if val < 0.8]
+
+                if worst_3:
+                    st.subheader("주요 결핍 경로 상세")
+                    for aa in worst_3:
+                        try:
+                            detail_fig = viz.pathway_detail_chart(strain_id, aa)
+                            st.plotly_chart(detail_fig, use_container_width=True)
+                        except Exception as e:
+                            st.warning(f"{aa} 경로 상세를 표시할 수 없습니다: {e}")
+
+
+# ── Tab 6: PDF 리포트 ─────────────────────────────────────────────
+
+def render_pdf_tab():
+    config = get_config()
+    comp_df = get_composition_df()
+    db = get_strain_db()
+    strain_df = db.get_strain_df()
+
+    if strain_df.empty:
+        st.warning("균주 데이터가 없습니다.")
+        return
+
+    st.subheader("📄 PDF 리포트 생성")
+    st.caption("분석 결과를 PDF 문서로 다운로드합니다.")
+
+    # Check if we have cached results from the recommend tab
+    has_cached = "last_recommendations" in st.session_state
+
+    strain_options = {
+        f"{r['strain_id']}: {r['full_name']}": r["strain_id"]
+        for _, r in strain_df.iterrows()
+    }
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        selected = st.selectbox("균주 선택", options=list(strain_options.keys()), key="pdf_strain")
+        strain_id = strain_options[selected]
+    with col2:
+        top_k = st.slider("추천 수", 3, 16, 10, key="pdf_topk")
+        sempio_only = st.checkbox("Sempio 소재만", value=True, key="pdf_sempio")
+        include_charts = st.checkbox("차트 이미지 포함", value=True, key="pdf_charts")
+
+    if has_cached:
+        cached_sid = st.session_state.get("last_strain_id")
+        if cached_sid == strain_id:
+            st.success("💡 '펩톤 추천' 탭의 분석 결과를 재사용합니다.")
+
+    if st.button("📄 PDF 생성", type="primary", use_container_width=True):
+        with st.spinner("PDF 리포트 생성 중..."):
+            # Generate recommendations (or reuse cached)
+            if has_cached and st.session_state.get("last_strain_id") == strain_id:
+                recommendations = st.session_state["last_recommendations"]
+                summary = st.session_state["last_summary"]
+            else:
+                recommender = PeptoneRecommender(comp_df, strain_df, config)
+                pf = config.get("peptone_filter") if sempio_only else None
+                recommendations = recommender.recommend(strain_id, top_k=top_k, peptone_filter=pf)
+
+                explainer = RecommendationExplainer(comp_df, strain_df, config, language="ko")
+                recommendations = explainer.explain_batch(strain_id, recommendations, top_n_reasons=3)
+                summary = explainer.get_strain_summary(strain_id)
+
+            # Generate chart images
+            charts = {}
+            if include_charts:
+                try:
+                    # Score bar chart
+                    fig = px.bar(
+                        recommendations, x="peptone", y="score",
+                        color="score", color_continuous_scale="Viridis",
+                    )
+                    fig.update_layout(height=350, showlegend=False, title="Peptone Match Scores")
+                    charts["Peptone Match Scores"] = fig.to_image(format="png", width=900, height=350)
+                except Exception:
+                    pass  # kaleido might not be installed
+
+                try:
+                    viz = KEGGVisualizer(strain_df, config)
+                    aa_fig = viz.aa_pathway_chart(strain_id)
+                    aa_fig.update_layout(height=350)
+                    charts["AA Biosynthesis Completeness"] = aa_fig.to_image(format="png", width=900, height=350)
+                except Exception:
+                    pass
+
+            # Generate PDF
+            from peptomatch.report_pdf import ReportGenerator
+            generator = ReportGenerator(comp_df, strain_df, config)
+            pdf_bytes = generator.generate(
+                strain_id=strain_id,
+                recommendations=recommendations,
+                summary=summary,
+                charts=charts,
+            )
+
+            strain_name = summary.get("name", f"strain{strain_id}").replace(" ", "_")
+            filename = f"PeptoMatch_{strain_name}.pdf"
+
+            st.download_button(
+                label="📥 PDF 다운로드",
+                data=pdf_bytes,
+                file_name=filename,
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+            )
+
+            st.success(f"PDF 리포트가 준비되었습니다! ({len(pdf_bytes)/1024:.1f} KB)")
 
 
 if __name__ == "__main__":
