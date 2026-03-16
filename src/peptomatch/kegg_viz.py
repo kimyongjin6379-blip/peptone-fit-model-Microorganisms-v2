@@ -127,74 +127,281 @@ class KEGGVisualizer:
         )
         return fig
 
-    # ── Detailed pathway step view ──────────────────────────────────
+    # ── KO enzyme name lookup ────────────────────────────────────────
 
-    def pathway_detail_chart(self, strain_id: int, aa: str) -> go.Figure:
-        """Show individual KO steps for a specific AA biosynthesis pathway.
+    # Maps KO IDs → short gene names (extracted from kegg_pathway.py comments)
+    _KO_GENE_NAMES: dict[str, str] = {
+        # Histidine
+        "K00765": "hisG", "K02501": "hisI", "K01814": "hisA",
+        "K02500": "hisH", "K01693": "hisB", "K00013": "hisD", "K01089": "hisC",
+        # Isoleucine / Valine / Leucine
+        "K01754": "ilvA", "K01652": "ilvB", "K01653": "ilvH",
+        "K00053": "ilvC", "K01687": "ilvD", "K00826": "ilvE",
+        "K01649": "leuA", "K01703": "leuC", "K01704": "leuD", "K00052": "leuB",
+        # Lysine
+        "K00928": "lysC", "K00133": "asd", "K01714": "dapA",
+        "K00215": "dapB", "K01439": "dapE", "K01778": "dapF", "K01586": "lysA",
+        # Methionine
+        "K00003": "hom", "K00651": "metA", "K01739": "metB",
+        "K01760": "metC", "K00548": "metH", "K00549": "metE",
+        # Phenylalanine / Tyrosine
+        "K01609": "trpC", "K00800": "aroA", "K01736": "aroC",
+        "K04518": "pheA2", "K00832": "tyrB", "K01850": "pheA",
+        "K00220": "tyrA",
+        # Threonine
+        "K00872": "thrB", "K01733": "thrC",
+        # Tryptophan
+        "K01657": "trpE", "K01658": "trpG", "K00766": "trpD",
+        "K01817": "trpF", "K01695": "trpA", "K01696": "trpB",
+        # Non-essential
+        "K00814": "GPT", "K00259": "ald",
+        "K00611": "argF", "K01940": "argG", "K01755": "argH",
+        "K00930": "argB", "K00145": "argC", "K00821": "argD",
+        "K01953": "asnB", "K01914": "asnA",
+        "K00813": "aspC", "K00812": "aspB",
+        "K00640": "cysE", "K01738": "cysK", "K12339": "cysM",
+        "K00262": "gdhA", "K00265": "gltB", "K00266": "gltD", "K01915": "glnA",
+        "K00600": "glyA", "K00281": "gcvP",
+        "K00931": "proB", "K00147": "proA", "K00286": "proC",
+        "K00058": "serA", "K00831": "serC", "K01079": "serB",
+        # Vitamins
+        "K00941": "thiD", "K00788": "thiE", "K00946": "thiL", "K03147": "thiC",
+        "K00794": "ribH", "K00793": "ribE", "K02858": "ribD", "K00082": "ribA",
+        "K00767": "nadC", "K00969": "nadD", "K01916": "nadE", "K03517": "nadB",
+        "K00077": "panE", "K00867": "panK", "K01918": "panC",
+        "K00275": "pdxH", "K03472": "pdxJ", "K03473": "pdxA",
+        "K00652": "bioF", "K00833": "bioA", "K01012": "bioB", "K00796": "folK",
+        "K00950": "folC", "K01930": "folE", "K00287": "folA",
+        "K02232": "cobA", "K02224": "cobI", "K02229": "cobO",
+    }
 
-        Each step (KO) is shown as a colored box: green=found, red=missing.
+    # ── Detailed pathway step view (flowchart) ────────────────────────
+
+    def pathway_detail_chart(
+        self,
+        strain_id: int,
+        aa: str,
+        pathway_source: str = "aa",
+    ) -> go.Figure:
+        """Draw a flowchart of individual KO enzyme steps for a pathway.
+
+        Each enzyme is a colored box connected by arrows.
+        Green = enzyme found, Red = enzyme missing.
+        ★ marks essential (key) enzymes.
+
+        Args:
+            strain_id: Strain ID
+            aa: Amino acid 3-letter code (e.g. "His") or vitamin key (e.g. "B1")
+            pathway_source: "aa" for amino acid, "vitamin" for vitamin pathways
         """
         prior = self.prior_builder.get_prior(strain_id)
-        label = self._label(strain_id)
 
-        if aa not in AA_BIOSYNTHESIS_KOS:
-            raise ValueError(f"Unknown amino acid: {aa}")
+        if pathway_source == "vitamin":
+            if aa not in VITAMIN_BIOSYNTHESIS_KOS:
+                raise ValueError(f"Unknown vitamin: {aa}")
+            pathway = VITAMIN_BIOSYNTHESIS_KOS[aa]
+            completeness = prior.get("vitamin_biosynthesis", {}).get(aa, 0)
+        else:
+            if aa not in AA_BIOSYNTHESIS_KOS:
+                raise ValueError(f"Unknown amino acid: {aa}")
+            pathway = AA_BIOSYNTHESIS_KOS[aa]
+            completeness = prior.get("aa_biosynthesis", {}).get(aa, 0)
 
-        pathway = AA_BIOSYNTHESIS_KOS[aa]
         kos = pathway["kos"]
         essential = set(pathway.get("essential_kos", []))
-
-        # Determine which KOs are found (from prior source)
-        # We re-derive from the prior's source info
         found_kos = self._get_found_kos(strain_id)
 
-        step_names = []
-        found_vals = []
-        colors = []
-        annotations = []
+        return self._draw_flowchart(
+            kos=kos,
+            essential=essential,
+            found_kos=found_kos,
+            pathway_name=pathway["name"],
+            module_id=pathway["pathway"],
+            completeness=completeness,
+        )
 
-        for ko in kos:
-            # Extract enzyme short name from the AA_BIOSYNTHESIS_KOS comments
-            name = ko
+    def _draw_flowchart(
+        self,
+        kos: list[str],
+        essential: set[str],
+        found_kos: set[str],
+        pathway_name: str,
+        module_id: str,
+        completeness: float,
+    ) -> go.Figure:
+        """Render a node-arrow flowchart using Plotly shapes.
+
+        Layout: left-to-right, wrapping to a new row when exceeding
+        ``max_per_row`` nodes.
+        """
+        n = len(kos)
+        max_per_row = min(n, 5)
+        n_rows = (n + max_per_row - 1) // max_per_row
+
+        # ── sizing constants ──
+        box_w = 1.6
+        box_h = 0.9
+        gap_x = 0.9          # horizontal gap between boxes
+        gap_y = 1.6          # vertical gap between rows
+        step_x = box_w + gap_x
+        step_y = box_h + gap_y
+
+        # Canvas bounds
+        total_w = max_per_row * step_x - gap_x + 1.0
+        total_h = n_rows * step_y + 0.5
+
+        fig = go.Figure()
+
+        shapes: list[dict] = []
+        annotations: list[dict] = []
+        arrow_x: list[float | None] = []
+        arrow_y: list[float | None] = []
+
+        node_centers: list[tuple[float, float]] = []
+
+        for idx, ko in enumerate(kos):
+            row = idx // max_per_row
+            col = idx % max_per_row
+            cx = col * step_x + box_w / 2 + 0.3
+            cy = total_h - row * step_y - box_h / 2 - 0.3
+            node_centers.append((cx, cy))
+
             is_found = ko in found_kos
             is_essential = ko in essential
+            gene = self._KO_GENE_NAMES.get(ko, ko)
 
-            step_names.append(name)
-            found_vals.append(1 if is_found else 0)
-            if is_found:
-                colors.append("#2ecc71")  # green
-            else:
-                colors.append("#e74c3c")  # red
+            fill = "#27ae60" if is_found else "#c0392b"
+            border = "#1e8449" if is_found else "#922b21"
 
-            label_text = "✓" if is_found else "✗"
+            # Rectangle shape
+            shapes.append(dict(
+                type="rect",
+                x0=cx - box_w / 2, y0=cy - box_h / 2,
+                x1=cx + box_w / 2, y1=cy + box_h / 2,
+                fillcolor=fill,
+                line=dict(color=border, width=2),
+                layer="below",
+            ))
+
+            # Gene name label (top line)
+            top_label = gene
             if is_essential:
-                label_text += " ★"
-            annotations.append(label_text)
+                top_label = f"★ {gene}"
+            annotations.append(dict(
+                x=cx, y=cy + 0.12,
+                text=f"<b>{top_label}</b>",
+                showarrow=False,
+                font=dict(size=12, color="white"),
+                xanchor="center", yanchor="middle",
+            ))
+            # KO ID label (bottom line)
+            status = "✓" if is_found else "✗"
+            annotations.append(dict(
+                x=cx, y=cy - 0.18,
+                text=f"{ko}  {status}",
+                showarrow=False,
+                font=dict(size=9, color="rgba(255,255,255,0.85)"),
+                xanchor="center", yanchor="middle",
+            ))
 
-        fig = go.Figure(data=[
-            go.Bar(
-                x=step_names,
-                y=[1] * len(step_names),
-                marker_color=colors,
-                text=annotations,
-                textposition="inside",
-                textfont=dict(size=16, color="white"),
-            )
-        ])
+        # ── arrows between consecutive nodes ──
+        for i in range(len(node_centers) - 1):
+            x0, y0 = node_centers[i]
+            x1, y1 = node_centers[i + 1]
 
-        completeness = prior.get("aa_biosynthesis", {}).get(aa, 0)
+            same_row = (i // max_per_row) == ((i + 1) // max_per_row)
+
+            if same_row:
+                # Horizontal arrow: from right edge of box i to left edge of box i+1
+                ax_start = x0 + box_w / 2
+                ax_end = x1 - box_w / 2
+                ay = y0
+                # Draw line segments
+                arrow_x.extend([ax_start, ax_end, None])
+                arrow_y.extend([ay, ay, None])
+                # Arrowhead annotation
+                annotations.append(dict(
+                    x=ax_end, y=ay,
+                    ax=ax_end - 0.25, ay=ay,
+                    xref="x", yref="y", axref="x", ayref="y",
+                    showarrow=True,
+                    arrowhead=3, arrowsize=1.5, arrowwidth=2,
+                    arrowcolor="#555",
+                ))
+            else:
+                # Row wrap: go down from bottom of box i, across, then into top of box i+1
+                mid_y = (y0 - box_h / 2 + y1 + box_h / 2) / 2
+
+                # Segment 1: down from box i
+                arrow_x.extend([x0, x0, None])
+                arrow_y.extend([y0 - box_h / 2, mid_y, None])
+                # Segment 2: horizontal to x1
+                arrow_x.extend([x0, x1, None])
+                arrow_y.extend([mid_y, mid_y, None])
+                # Segment 3: down to box i+1
+                arrow_x.extend([x1, x1, None])
+                arrow_y.extend([mid_y, y1 + box_h / 2, None])
+                # Arrowhead
+                annotations.append(dict(
+                    x=x1, y=y1 + box_h / 2,
+                    ax=x1, ay=y1 + box_h / 2 + 0.25,
+                    xref="x", yref="y", axref="x", ayref="y",
+                    showarrow=True,
+                    arrowhead=3, arrowsize=1.5, arrowwidth=2,
+                    arrowcolor="#555",
+                ))
+
+        # Arrow lines as a Scatter trace
+        fig.add_trace(go.Scatter(
+            x=arrow_x, y=arrow_y,
+            mode="lines",
+            line=dict(color="#555", width=2),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+
+        # Legend items
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=12, color="#27ae60", symbol="square"),
+            name="효소 존재 (Found)",
+        ))
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=12, color="#c0392b", symbol="square"),
+            name="효소 결핍 (Missing)",
+        ))
+
+        # Title annotation
+        title_text = (
+            f"{pathway_name} ({module_id}) — "
+            f"완성도: {completeness:.0%}"
+        )
+        annotations.append(dict(
+            x=0.5, y=1.08, xref="paper", yref="paper",
+            text=f"<b>{title_text}</b>",
+            showarrow=False, font=dict(size=14),
+            xanchor="center",
+        ))
+        # Legend annotation
+        annotations.append(dict(
+            x=0.01, y=-0.06, xref="paper", yref="paper",
+            text="★ = 핵심 효소 (Essential)  |  ✓ = 존재  |  ✗ = 결핍",
+            showarrow=False, font=dict(size=10, color="#666"),
+            xanchor="left",
+        ))
 
         fig.update_layout(
-            title=f"{pathway['name']} (M{pathway['pathway'][1:]}) — 완성도: {completeness:.0%}",
-            yaxis=dict(visible=False),
-            xaxis_title="효소 (KO ID)",
-            height=250,
-            showlegend=False,
-            annotations=[
-                dict(x=0.01, y=1.15, xref="paper", yref="paper",
-                     text="✓ = 존재 | ✗ = 결핍 | ★ = 핵심 효소",
-                     showarrow=False, font=dict(size=11)),
-            ],
+            shapes=shapes,
+            annotations=annotations,
+            xaxis=dict(visible=False, range=[0, total_w]),
+            yaxis=dict(visible=False, range=[0, total_h + 0.3],
+                       scaleanchor="x", scaleratio=1),
+            height=max(280, n_rows * 160 + 80),
+            margin=dict(l=10, r=10, t=50, b=40),
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=-0.15, x=0.5, xanchor="center"),
+            plot_bgcolor="white",
         )
         return fig
 
