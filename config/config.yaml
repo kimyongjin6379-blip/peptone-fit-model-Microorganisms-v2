@@ -43,5 +43,5 @@ ncbi:
 
 annotation:
   strategy: "auto"  # auto, kofamscan, gff3, taxonomy
-  kofamscan_path: null  # set if KofamScan is installed
-  kofamscan_profiles: null  # path to KOfam HMM profiles
+  kofamscan_path: null  # auto-detected from KOFAMSCAN_PATH env or PATH
+  kofamscan_profiles: null  # auto-detected from KOFAMSCAN_PROFILES env

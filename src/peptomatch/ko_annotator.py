@@ -7,6 +7,7 @@ Strategies (in priority order):
 """
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -144,9 +145,23 @@ class KOAnnotator:
 
     def __init__(self, kofamscan_path: Optional[str] = None,
                  kofamscan_profiles: Optional[str] = None):
-        self.kofamscan_path = kofamscan_path or shutil.which("exec_annotation")
-        self.kofamscan_profiles = kofamscan_profiles
-        self.has_kofamscan = self.kofamscan_path is not None
+        # Priority: explicit arg > env var > PATH lookup
+        self.kofamscan_path = (
+            kofamscan_path
+            or os.environ.get("KOFAMSCAN_PATH")
+            or shutil.which("exec_annotation")
+        )
+        self.kofamscan_profiles = (
+            kofamscan_profiles
+            or os.environ.get("KOFAMSCAN_PROFILES")
+        )
+        # Verify binary actually exists
+        self.has_kofamscan = (
+            self.kofamscan_path is not None
+            and Path(self.kofamscan_path).exists()
+        )
+        if self.has_kofamscan:
+            logger.info(f"KofamScan found: {self.kofamscan_path}")
 
     def annotate(self, protein_fasta: Optional[Path] = None,
                  gff3_path: Optional[Path] = None,
@@ -241,9 +256,13 @@ class KOAnnotator:
             return self._parse_kofamscan_output(output_file)
 
         try:
-            cmd = [self.kofamscan_path, "-o", str(output_file)]
+            cmd = [self.kofamscan_path, "-o", str(output_file), "--cpu=2"]
             if self.kofamscan_profiles:
                 cmd.extend(["-p", self.kofamscan_profiles])
+            # Use config.yml if it exists alongside exec_annotation
+            config_yml = Path(self.kofamscan_path).parent / "config.yml"
+            if config_yml.exists():
+                cmd.extend(["--config", str(config_yml)])
             cmd.append(str(protein_fasta))
 
             logger.info(f"Running KofamScan on {protein_fasta.name}...")

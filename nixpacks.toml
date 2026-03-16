@@ -1,10 +1,14 @@
 # Railway uses Nixpacks for auto-build
-# HMMER: NCBI protein sequence analysis (KofamScan dependency)
+# HMMER: KofamScan HMM search engine
+# Ruby: KofamScan exec_annotation script
 [phases.setup]
-nixPkgs = ["hmmer"]
+nixPkgs = ["hmmer", "ruby", "wget", "gzip"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt && pip install -e ."]
+cmds = [
+    "pip install -r requirements.txt && pip install -e .",
+    "chmod +x scripts/setup_kofamscan.sh start.sh",
+]
 
 [start]
-cmd = "streamlit run app/streamlit_app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true"
+cmd = "bash start.sh"
