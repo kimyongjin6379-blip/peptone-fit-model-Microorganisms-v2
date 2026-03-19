@@ -304,6 +304,59 @@ class PeptoneRecommender:
         """
         return self.composition_extractor.get_peptone_profile(peptone_name)
 
+    def recommend_blend(
+        self,
+        strain_id: int,
+        max_components: int = 3,
+        top_k: int = 5,
+        peptone_filter: Optional[list[str]] = None,
+        min_ratio: float = 0.1,
+        max_ratio: float = 0.8,
+    ) -> list:
+        """Get top blended peptone recommendations for a strain.
+
+        Args:
+            strain_id: Strain ID from strain table
+            max_components: Maximum components per blend (2 or 3)
+            top_k: Number of top blends to return
+            peptone_filter: Optional list of peptone names to consider
+            min_ratio: Minimum ratio per component
+            max_ratio: Maximum ratio per component
+
+        Returns:
+            List of BlendResult objects
+        """
+        from .blend_optimizer import BlendOptimizer
+
+        # Get demand scores
+        demand_scores = self.genome_prior_builder.get_demand_scores(strain_id)
+
+        # Determine peptone filter
+        if peptone_filter is None:
+            peptone_filter = self.config.get("peptone_filter", None)
+
+        # Create optimizer
+        optimizer = BlendOptimizer(
+            supply_scores=self.supply_scores,
+            min_ratio=min_ratio,
+            max_ratio=max_ratio,
+        )
+
+        # Find best blends
+        results = optimizer.find_best_blends(
+            demand_scores=demand_scores,
+            scoring_fn=self._compute_match_score,
+            peptone_filter=peptone_filter,
+            max_components=max_components,
+            top_k=top_k,
+        )
+
+        logger.info(
+            f"Found {len(results)} blend recommendations for strain {strain_id}"
+        )
+
+        return results
+
 
 class CompositionOnlyRecommender:
     """Simplified recommender for when genome priors are not available."""

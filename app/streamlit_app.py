@@ -23,6 +23,7 @@ from peptomatch.ncbi_client import NCBIClient
 from peptomatch.taxonomy_priors import list_supported_genera
 from peptomatch.compare import StrainComparator
 from peptomatch.kegg_viz import KEGGVisualizer
+from peptomatch.blend_optimizer import BlendOptimizer
 
 st.set_page_config(
     page_title="PeptoMatch",
@@ -73,26 +74,29 @@ def main():
     st.title("🧬 PeptoMatch")
     st.caption("Genome-driven Peptone Recommendation System")
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "🎯 펩톤 추천",
+        "🧪 블렌딩 최적화",
         "🔍 균주 브라우저",
         "📊 펩톤 탐색기",
         "⚖️ 균주 비교",
-        "🧪 KEGG 경로",
+        "🧬 KEGG 경로",
         "📄 PDF 리포트",
     ])
 
     with tab1:
         render_recommend_tab()
     with tab2:
-        render_strain_browser_tab()
+        render_blend_tab()
     with tab3:
-        render_peptone_explorer_tab()
+        render_strain_browser_tab()
     with tab4:
-        render_compare_tab()
+        render_peptone_explorer_tab()
     with tab5:
-        render_kegg_tab()
+        render_compare_tab()
     with tab6:
+        render_kegg_tab()
+    with tab7:
         render_pdf_tab()
 
 
@@ -172,7 +176,227 @@ def render_recommend_tab():
                            f"peptomatch_strain{strain_id}.csv", "text/csv")
 
 
-# ── Tab 2: 균주 브라우저 ───────────────────────────────────────────
+# ── Tab 2: 블렌딩 최적화 ──────────────────────────────────────────
+
+def render_blend_tab():
+    config = get_config()
+    comp_df = get_composition_df()
+    db = get_strain_db()
+    strain_df = db.get_strain_df()
+
+    if strain_df.empty:
+        st.warning("균주 데이터가 없습니다. '균주 브라우저' 탭에서 균주를 추가해주세요.")
+        return
+
+    st.subheader("🧪 펩톤 블렌딩 최적화")
+    st.caption("2~3종 펩톤의 최적 혼합 비율을 찾아 단일 펩톤 대비 매칭 점수를 높입니다.")
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        strain_options = {
+            f"{r['strain_id']}: {r['full_name']}": r["strain_id"]
+            for _, r in strain_df.iterrows()
+        }
+        selected = st.selectbox("균주 선택", options=list(strain_options.keys()), key="blend_strain")
+        strain_id = strain_options[selected]
+
+    with col2:
+        max_components = st.radio("최대 혼합 수", [2, 3], index=1, horizontal=True, key="blend_max")
+        top_k = st.slider("결과 수", 3, 10, 5, key="blend_topk")
+        sempio_only = st.checkbox("Sempio 소재만", value=True, key="blend_sempio")
+
+    # Blend mode selection
+    blend_mode = st.radio(
+        "블렌딩 모드",
+        ["🔍 자동 탐색 (모든 조합에서 최적 찾기)", "✏️ 수동 선택 (특정 펩톤 지정)"],
+        horizontal=True,
+        key="blend_mode",
+    )
+
+    manual_peptones = None
+    if "수동" in blend_mode:
+        pf = config.get("peptone_filter", [])
+        extractor = CompositionFeatureExtractor(comp_df, config)
+        supply_scores = extractor.compute_supply_scores()
+        available = [p for p in supply_scores.index if p in pf] if sempio_only else supply_scores.index.tolist()
+
+        manual_peptones = st.multiselect(
+            "혼합할 펩톤 선택 (2~3종)",
+            available,
+            max_selections=3,
+            key="blend_manual_peptones",
+        )
+        if len(manual_peptones) < 2:
+            st.info("2종 이상의 펩톤을 선택해주세요.")
+
+    if st.button("🚀 블렌딩 최적화 시작", type="primary", width="stretch", key="blend_btn"):
+        with st.spinner("최적 블렌드 탐색 중... (조합이 많을 경우 30초~1분 소요)"):
+            recommender = PeptoneRecommender(comp_df, strain_df, config)
+
+            if manual_peptones and len(manual_peptones) >= 2:
+                # Manual mode: optimize specific combination
+                from peptomatch.blend_optimizer import BlendOptimizer as BO
+                optimizer = BO(
+                    supply_scores=recommender.supply_scores,
+                    min_ratio=0.1,
+                    max_ratio=0.8,
+                )
+                demand_scores = recommender.genome_prior_builder.get_demand_scores(strain_id)
+                try:
+                    single_result = optimizer.optimize_blend(
+                        manual_peptones, demand_scores, recommender._compute_match_score
+                    )
+                    blend_results = [single_result]
+                except Exception as e:
+                    st.error(f"최적화 실패: {e}")
+                    return
+            else:
+                # Auto mode: search all combinations
+                pf = config.get("peptone_filter") if sempio_only else None
+                blend_results = recommender.recommend_blend(
+                    strain_id,
+                    max_components=max_components,
+                    top_k=top_k,
+                    peptone_filter=pf,
+                )
+
+            if not blend_results:
+                st.warning("블렌딩 결과를 찾을 수 없습니다.")
+                return
+
+            # Also get single peptone top-1 for comparison
+            pf = config.get("peptone_filter") if sempio_only else None
+            single_recs = recommender.recommend(strain_id, top_k=1, peptone_filter=pf)
+            best_single_score = single_recs.iloc[0]["score"] if not single_recs.empty else 0
+            best_single_name = single_recs.iloc[0]["peptone"] if not single_recs.empty else "N/A"
+
+        # Store results in session state
+        st.session_state["blend_results"] = blend_results
+        st.session_state["blend_best_single"] = (best_single_name, best_single_score)
+        st.session_state["blend_strain_id"] = strain_id
+
+    # Display results
+    if "blend_results" not in st.session_state:
+        return
+
+    blend_results = st.session_state["blend_results"]
+    best_single_name, best_single_score = st.session_state["blend_best_single"]
+
+    # Comparison metric
+    best_blend = blend_results[0]
+    st.divider()
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("최적 블렌드 점수", f"{best_blend.score:.1f}")
+    m2.metric("단일 최고 점수", f"{best_single_score:.1f} ({best_single_name})")
+    m3.metric("시너지 (점수 차이)", f"{best_blend.synergy:+.1f}",
+              delta=f"{best_blend.synergy:+.1f}", delta_color="normal")
+    m4.metric("상보성 점수", f"{best_blend.complementarity.get('overall', 0):.2f}")
+
+    # Results table
+    st.subheader("블렌딩 결과 랭킹")
+
+    result_rows = []
+    for i, br in enumerate(blend_results):
+        row = {
+            "순위": i + 1,
+            "블렌드 조합": br.description,
+            "블렌드 점수": round(br.score, 1),
+            "시너지": round(br.synergy, 1),
+            "상보성": round(br.complementarity.get("overall", 0), 3),
+            "최적화": "✅" if br.optimization_success else "⚠️",
+        }
+        result_rows.append(row)
+
+    result_df = pd.DataFrame(result_rows)
+    st.dataframe(result_df, width="stretch", hide_index=True)
+
+    # Detailed view of top blend
+    st.subheader("🏆 최적 블렌드 상세")
+
+    # Pie chart for ratios
+    pie_col, detail_col = st.columns([1, 2])
+
+    with pie_col:
+        fig_pie = go.Figure(data=[go.Pie(
+            labels=best_blend.peptones,
+            values=[r * 100 for r in best_blend.ratios],
+            textinfo="label+percent",
+            hole=0.4,
+            marker=dict(colors=px.colors.qualitative.Set2[:len(best_blend.peptones)]),
+        )])
+        fig_pie.update_layout(
+            title="최적 혼합 비율",
+            height=350,
+            showlegend=False,
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    with detail_col:
+        # Individual vs blend score comparison
+        labels = list(best_blend.single_scores.keys()) + ["BLEND"]
+        scores = list(best_blend.single_scores.values()) + [best_blend.score]
+        colors = ["#636EFA"] * len(best_blend.single_scores) + ["#EF553B"]
+
+        fig_bar = go.Figure(data=[go.Bar(
+            x=labels,
+            y=scores,
+            marker_color=colors,
+            text=[f"{s:.1f}" for s in scores],
+            textposition="outside",
+        )])
+        fig_bar.update_layout(
+            title="단일 vs 블렌드 점수 비교",
+            yaxis_title="매칭 점수",
+            height=350,
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    # Complementarity details
+    st.subheader("상보성 분석")
+    comp = best_blend.complementarity
+    c1, c2, c3 = st.columns(3)
+    c1.metric("프로파일 다양성", f"{comp.get('profile_diversity', 0):.3f}",
+              help="펩톤 간 성분 프로파일 차이 (클수록 다양)")
+    c2.metric("특성 커버리지", f"{comp.get('feature_coverage', 0):.1%}",
+              help="주요 영양소 커버 비율")
+    c3.metric("Gap 보완도", f"{comp.get('gap_filling', 0):.3f}",
+              help="한 펩톤의 약점을 다른 펩톤이 보완하는 정도")
+
+    # Score comparison across all blends (bar chart)
+    if len(blend_results) > 1:
+        st.subheader("전체 블렌드 점수 비교")
+        fig_all = px.bar(
+            result_df,
+            x="블렌드 조합",
+            y="블렌드 점수",
+            color="시너지",
+            color_continuous_scale="RdYlGn",
+            labels={"블렌드 조합": "조합", "블렌드 점수": "점수"},
+        )
+        fig_all.update_layout(height=400, xaxis_tickangle=-45)
+        # Add best single score reference line
+        fig_all.add_hline(
+            y=best_single_score,
+            line_dash="dash",
+            line_color="gray",
+            annotation_text=f"단일 최고: {best_single_name} ({best_single_score:.1f})",
+            annotation_position="top right",
+        )
+        st.plotly_chart(fig_all, use_container_width=True)
+
+    # Download
+    csv_data = result_df.to_csv(index=False, encoding="utf-8-sig")
+    st.download_button(
+        "📥 블렌딩 결과 다운로드 (CSV)",
+        csv_data,
+        f"peptomatch_blend_strain{st.session_state.get('blend_strain_id', '')}.csv",
+        "text/csv",
+    )
+
+
+# ── Tab 3: 균주 브라우저 ───────────────────────────────────────────
 
 def render_strain_browser_tab():
     config = get_config()
