@@ -57,8 +57,26 @@ class GenomePriorBuilder:
             try:
                 with open(self.prior_file, "r", encoding="utf-8") as f:
                     cached = json.load(f)
-                    self.priors = {int(k): v for k, v in cached.items()}
-                logger.info(f"Loaded {len(self.priors)} cached genome priors")
+                    loaded = {int(k): v for k, v in cached.items()}
+
+                # Validate: drop entries missing new fields
+                valid = {}
+                invalid_count = 0
+                for k, v in loaded.items():
+                    if self._is_cache_valid(v):
+                        valid[k] = v
+                    else:
+                        invalid_count += 1
+
+                self.priors = valid
+                if invalid_count > 0:
+                    logger.info(
+                        f"Dropped {invalid_count} outdated priors "
+                        f"(missing sugar/mineral/orgacid fields), "
+                        f"kept {len(valid)} valid"
+                    )
+                else:
+                    logger.info(f"Loaded {len(self.priors)} cached genome priors")
             except Exception as e:
                 logger.warning(f"Could not load cached priors: {e}")
 
@@ -115,6 +133,14 @@ class GenomePriorBuilder:
         self.priors[strain_id] = prior
         return prior
 
+    def _is_cache_valid(self, cached: dict) -> bool:
+        """Check if cached prior has all required fields (including new ones)."""
+        required_fields = [
+            "aa_biosynthesis", "vitamin_biosynthesis",
+            "sugar_metabolism", "organic_acid_metabolism", "mineral_transport",
+        ]
+        return all(field in cached for field in required_fields)
+
     def _build_gcf_prior(self, gcf: str, strain_id: int, genus: str = "") -> Optional[dict[str, Any]]:
         """Build prior from GCF accession using NCBI download + KO annotation."""
         # Check per-GCF cache
@@ -122,8 +148,12 @@ class GenomePriorBuilder:
         if cache_file.exists():
             try:
                 with open(cache_file, "r", encoding="utf-8") as f:
+                    cached = json.load(f)
+                if self._is_cache_valid(cached):
                     logger.info(f"Loaded cached prior for {gcf}")
-                    return json.load(f)
+                    return cached
+                else:
+                    logger.info(f"Cache outdated for {gcf}, rebuilding...")
             except Exception:
                 pass
 
@@ -174,9 +204,12 @@ class GenomePriorBuilder:
         if cache_file.exists():
             try:
                 with open(cache_file, "r", encoding="utf-8") as f:
-                    prior = json.load(f)
+                    cached = json.load(f)
+                if self._is_cache_valid(cached):
                     logger.info(f"Loaded cached KEGG prior for {genus} {species}")
-                    return prior
+                    return cached
+                else:
+                    logger.info(f"KEGG cache outdated for {genus} {species}, rebuilding...")
             except Exception:
                 pass
 
