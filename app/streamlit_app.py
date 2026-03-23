@@ -863,7 +863,7 @@ def render_pdf_tab():
 
             st.download_button(
                 label="📥 PDF 다운로드",
-                data=pdf_bytes,
+                data=bytes(pdf_bytes) if isinstance(pdf_bytes, bytearray) else pdf_bytes,
                 file_name=filename,
                 mime="application/pdf",
                 type="primary",
