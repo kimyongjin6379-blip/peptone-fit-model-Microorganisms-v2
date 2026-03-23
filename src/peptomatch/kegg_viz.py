@@ -417,29 +417,55 @@ class KEGGVisualizer:
 
         categories = []
         values = []
+        group_labels = []  # for annotation
 
         essential = ["His", "Ile", "Leu", "Lys", "Met", "Phe", "Thr", "Trp", "Val"]
         non_essential = ["Ala", "Arg", "Asn", "Asp", "Cys", "Glu", "Gln", "Gly", "Pro", "Ser", "Tyr"]
 
-        for aa in essential + non_essential:
+        for aa in essential:
             categories.append(aa)
-            values.append(aa_synth.get(aa, 0.5))
+            values.append(aa_synth.get(aa, 0.0))
+            group_labels.append("Essential AA")
 
-        categories.append("")  # spacer
-        values.append(None)
+        for aa in non_essential:
+            categories.append(aa)
+            values.append(aa_synth.get(aa, 0.0))
+            group_labels.append("Non-essential AA")
 
-        for v in sorted(vit_synth.keys()):
-            categories.append(f"B{v[1:]}" if v.startswith("B") else v)
-            values.append(vit_synth.get(v, 0.5))
+        # Spacer with unique label (not empty string)
+        categories.append(" ")
+        values.append(float("nan"))
+        group_labels.append("")
 
-        categories.append("")
-        values.append(None)
+        vit_keys = sorted(vit_synth.keys()) if vit_synth else ["B1", "B2", "B3", "B6", "B9"]
+        for v in vit_keys:
+            display = f"B{v[1:]}" if v.startswith("B") else v
+            categories.append(display)
+            values.append(vit_synth.get(v, 0.0))
+            group_labels.append("Vitamin")
+
+        # Second spacer with different unique label
+        categories.append("  ")
+        values.append(float("nan"))
+        group_labels.append("")
+
         categories.append("Nucleotide")
-        values.append(nuc)
+        values.append(nuc if isinstance(nuc, (int, float)) else 0.5)
+        group_labels.append("Other")
+
         categories.append("Transporter")
-        values.append(trans)
+        values.append(trans if isinstance(trans, (int, float)) else 0.5)
+        group_labels.append("Other")
 
         label = self._label(strain_id)
+
+        # Build text labels (show % for valid values, empty for spacers)
+        text_row = []
+        for v in values:
+            if v is not None and not (isinstance(v, float) and v != v):  # check for NaN
+                text_row.append(f"{v:.0%}")
+            else:
+                text_row.append("")
 
         fig = go.Figure(data=go.Heatmap(
             z=[values],
@@ -448,13 +474,37 @@ class KEGGVisualizer:
             colorscale="RdYlGn",
             zmin=0, zmax=1,
             colorbar_title="완성도",
-            text=[[f"{v:.0%}" if v is not None else "" for v in values]],
+            text=[text_row],
             texttemplate="%{text}",
+            hovertemplate="<b>%{x}</b>: %{text}<extra></extra>",
+            xgap=1,
+            ygap=1,
         ))
+
+        # Add group separator annotations
+        n_ess = len(essential)
+        n_noness = len(non_essential)
+        n_vit = len(vit_keys)
+
         fig.update_layout(
             title=f"생합성 경로 종합 — {label}",
-            height=200,
-            xaxis_title="경로",
+            height=240,
+            xaxis=dict(
+                title="",
+                tickangle=-45,
+                side="bottom",
+            ),
+            annotations=[
+                dict(x=n_ess / 2 - 0.5, y=1.15, text="<b>Essential AA</b>",
+                     showarrow=False, xref="x", yref="paper", font=dict(size=10)),
+                dict(x=n_ess + n_noness / 2 - 0.5, y=1.15, text="<b>Non-essential AA</b>",
+                     showarrow=False, xref="x", yref="paper", font=dict(size=10)),
+                dict(x=n_ess + n_noness + 1 + n_vit / 2 - 0.5, y=1.15, text="<b>Vitamin</b>",
+                     showarrow=False, xref="x", yref="paper", font=dict(size=10)),
+                dict(x=n_ess + n_noness + 1 + n_vit + 1 + 0.5, y=1.15, text="<b>Other</b>",
+                     showarrow=False, xref="x", yref="paper", font=dict(size=10)),
+            ],
+            margin=dict(t=80, b=10),
         )
         return fig
 
