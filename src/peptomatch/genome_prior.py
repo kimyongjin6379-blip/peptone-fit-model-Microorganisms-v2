@@ -285,6 +285,25 @@ class GenomePriorBuilder:
         demand["demand_nucleotide"] = 1.0 - nuc_synth
 
         demand["transporter_bonus"] = prior.get("transporter_score", 0.5)
+
+        # Sugar metabolism: completeness = can use this sugar
+        # Higher completeness → strain CAN use it → supply is valuable
+        sugar_meta = prior.get("sugar_metabolism", {})
+        for sugar, completeness in sugar_meta.items():
+            demand[f"sugar_utilization_{sugar}"] = completeness
+
+        # Organic acid metabolism: completeness = can use/tolerate this acid
+        # Higher completeness → supply is neutral/positive (not penalty)
+        orgacid_meta = prior.get("organic_acid_metabolism", {})
+        for acid, completeness in orgacid_meta.items():
+            demand[f"orgacid_utilization_{acid}"] = completeness
+
+        # Mineral transport: completeness = has transporters for this mineral
+        # Higher completeness → mineral supply is valuable
+        mineral_trans = prior.get("mineral_transport", {})
+        for mineral, completeness in mineral_trans.items():
+            demand[f"mineral_demand_{mineral}"] = completeness
+
         return demand
 
     def get_prior_summary(self, strain_id: int) -> dict[str, Any]:

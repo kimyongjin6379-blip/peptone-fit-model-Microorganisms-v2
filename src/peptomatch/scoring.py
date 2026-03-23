@@ -135,6 +135,11 @@ class PeptoneRecommender:
             "nucleotides": self.weights.get("nucleotides", 0.4),
             "aa_match": self.weights.get("aa_biosynthesis_gap", 1.5),
             "transporter": self.weights.get("transporter_bonus", 0.5),
+            # New weights
+            "sugar": self.weights.get("sugar", 1.5),
+            "mineral": self.weights.get("mineral", 0.8),
+            "orgacid": self.weights.get("orgacid", 0.5),
+            "nitrogen_quality": self.weights.get("nitrogen_quality", 0.6),
         }
 
         # 1. Base composition scores (supply only)
@@ -187,18 +192,83 @@ class PeptoneRecommender:
         components["aa_match"] = aa_match_score
 
         # 5. Transporter bonus for peptide-rich peptones
-        # Strains with more transporters benefit more from medium MW peptides
         transporter_score = transporter_bonus * (
             supply.get("supply_medium_mw", 0) + supply.get("supply_low_mw", 0) * 0.5
         ) * w["transporter"]
         components["transporter_bonus"] = transporter_score
+
+        # ===== NEW SCORING COMPONENTS =====
+
+        # 6. Sugar/carbon source matching
+        # Score = Σ(sugar_supply × strain_can_use) for each sugar type
+        sugar_types = ["glucose", "sucrose", "lactose", "maltose"]
+        sugar_score = 0
+        sugar_count = 0
+        for sugar in sugar_types:
+            supply_key = f"supply_sugar_{sugar}"
+            demand_key = f"sugar_utilization_{sugar}"
+            s_val = supply.get(supply_key, 0)
+            d_val = demand.get(demand_key, 0)
+            if s_val > 0 or d_val > 0:
+                sugar_score += s_val * d_val
+                sugar_count += 1
+        # Also add total sugar weighted by average utilization
+        avg_utilization = np.mean([demand.get(f"sugar_utilization_{s}", 0) for s in sugar_types])
+        sugar_total_bonus = supply.get("supply_sugar_total", 0) * avg_utilization * 0.5
+        sugar_score += sugar_total_bonus
+        if sugar_count > 0:
+            sugar_score = sugar_score * w["sugar"]
+        components["sugar_carbon"] = sugar_score
+
+        # 7. Mineral supply matching
+        # Score = Σ(mineral_supply × strain_has_transporter) for each mineral
+        mineral_types = [("K", "K"), ("Mg", "Mg"), ("Ca", "Ca"), ("Na", "Na")]
+        mineral_score = 0
+        for supply_mineral, demand_mineral in mineral_types:
+            supply_key = f"supply_mineral_{supply_mineral}"
+            demand_key = f"mineral_demand_{demand_mineral}"
+            s_val = supply.get(supply_key, 0)
+            d_val = demand.get(demand_key, 0.5)  # Default 0.5 = assume moderate need
+            mineral_score += s_val * d_val
+        # Add Fe and Mn demand even without direct supply data (bonus for Mg-rich)
+        fe_demand = demand.get("mineral_demand_Fe", 0)
+        mn_demand = demand.get("mineral_demand_Mn", 0)
+        # Mg-rich peptones often co-supply trace metals
+        mineral_score += supply.get("supply_mineral_Mg", 0) * (fe_demand + mn_demand) * 0.2
+        mineral_score = mineral_score * w["mineral"]
+        components["mineral_supply"] = mineral_score
+
+        # 8. Organic acid utilization (replaces simple penalty)
+        # If strain CAN use the acid → positive; if CANNOT → penalty
+        orgacid_types = [("lactate", "lactate"), ("citrate", "citrate"),
+                         ("acetate", "acetate"), ("succinate", "succinate"),
+                         ("malate", "malate")]
+        orgacid_score = 0
+        for supply_acid, demand_acid in orgacid_types:
+            supply_key = f"supply_orgacid_{supply_acid}"
+            demand_key = f"orgacid_utilization_{demand_acid}"
+            s_val = supply.get(supply_key, 0)
+            d_val = demand.get(demand_key, 0)  # 0 = cannot use
+
+            if d_val >= 0.5:
+                # Strain CAN use this acid → positive contribution
+                orgacid_score += s_val * d_val * 0.3
+            else:
+                # Strain CANNOT use this acid → penalty
+                orgacid_score -= s_val * (1 - d_val) * 0.3
+        orgacid_score = orgacid_score * w["orgacid"]
+        components["orgacid_utilization"] = orgacid_score
+
+        # 9. Nitrogen quality bonus (AN/TN ratio)
+        nq_score = supply.get("supply_nitrogen_quality", 0) * w["nitrogen_quality"]
+        components["nitrogen_quality"] = nq_score
 
         # Total score
         total_score = sum(components.values())
 
         # Normalize to 0-100 scale
         max_possible = sum(w.values()) * 2  # Rough estimate
-        normalized_score = (total_score / max_possible) * 100
+        normalized_score = max(0, (total_score / max_possible) * 100)
 
         return normalized_score, components
 

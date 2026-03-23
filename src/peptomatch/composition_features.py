@@ -449,6 +449,112 @@ class CompositionFeatureExtractor:
                 else:
                     scores[f"supply_{aa}"] = 0
 
+        # --- Sugar supply scores ---
+        sugar_cols = self.get_columns_by_category("sugar")
+        sugar_map = {
+            "fructose": "glucose",   # fructose → glucose pathway (similar)
+            "glucose": "glucose",
+            "sucrose": "sucrose",
+            "lactose": "lactose",
+            "maltose": "maltose",
+        }
+        for col in sugar_cols:
+            col_lower = col.lower()
+            for sugar_name, kegg_key in sugar_map.items():
+                if sugar_name in col_lower:
+                    val = features.get(col, self.raw_df.get(col))
+                    if val is not None:
+                        raw_vals = self.raw_df[col] if col in self.raw_df.columns else pd.Series(0, index=features.index)
+                        s_max = raw_vals.max()
+                        if s_max > 0:
+                            scores[f"supply_sugar_{kegg_key}"] = raw_vals / s_max
+                        else:
+                            scores[f"supply_sugar_{kegg_key}"] = 0
+                    break
+
+        # Total sugar supply
+        if sugar_cols:
+            sugar_total = self.raw_df[sugar_cols].sum(axis=1)
+            s_max = sugar_total.max()
+            if s_max > 0:
+                scores["supply_sugar_total"] = sugar_total / s_max
+            else:
+                scores["supply_sugar_total"] = 0
+
+        # --- Organic acid supply scores ---
+        orgacid_cols = self.get_columns_by_category("orgacid")
+        orgacid_map = {
+            "citric": "citrate",
+            "malic": "malate",
+            "succinic": "succinate",
+            "lactic": "lactate",
+            "acetic": "acetate",
+        }
+        for col in orgacid_cols:
+            col_lower = col.lower()
+            for acid_name, kegg_key in orgacid_map.items():
+                if acid_name in col_lower:
+                    raw_vals = self.raw_df[col] if col in self.raw_df.columns else pd.Series(0, index=features.index)
+                    s_max = raw_vals.max()
+                    if s_max > 0:
+                        scores[f"supply_orgacid_{kegg_key}"] = raw_vals / s_max
+                    else:
+                        scores[f"supply_orgacid_{kegg_key}"] = 0
+                    break
+
+        # Total organic acid supply
+        if orgacid_cols:
+            orgacid_total = self.raw_df[orgacid_cols].sum(axis=1)
+            s_max = orgacid_total.max()
+            if s_max > 0:
+                scores["supply_orgacid_total"] = orgacid_total / s_max
+            else:
+                scores["supply_orgacid_total"] = 0
+
+        # --- Mineral supply scores ---
+        if "mineral_K" in features.columns:
+            m_max = features["mineral_K"].max()
+            if m_max > 0:
+                scores["supply_mineral_K"] = features["mineral_K"] / m_max
+            else:
+                scores["supply_mineral_K"] = 0
+
+        if "mineral_Mg" in features.columns:
+            m_max = features["mineral_Mg"].max()
+            if m_max > 0:
+                scores["supply_mineral_Mg"] = features["mineral_Mg"] / m_max
+            else:
+                scores["supply_mineral_Mg"] = 0
+
+        if "mineral_Ca" in features.columns:
+            m_max = features["mineral_Ca"].max()
+            if m_max > 0:
+                scores["supply_mineral_Ca"] = features["mineral_Ca"] / m_max
+            else:
+                scores["supply_mineral_Ca"] = 0
+
+        if "mineral_Na" in features.columns:
+            m_max = features["mineral_Na"].max()
+            if m_max > 0:
+                scores["supply_mineral_Na"] = features["mineral_Na"] / m_max
+            else:
+                scores["supply_mineral_Na"] = 0
+
+        if "mineral_total" in features.columns:
+            m_max = features["mineral_total"].max()
+            if m_max > 0:
+                scores["supply_mineral_total"] = features["mineral_total"] / m_max
+            else:
+                scores["supply_mineral_total"] = 0
+
+        # --- Nitrogen quality score ---
+        if "general_AN_TN_ratio" in features.columns:
+            r_max = features["general_AN_TN_ratio"].max()
+            if r_max > 0:
+                scores["supply_nitrogen_quality"] = features["general_AN_TN_ratio"] / r_max
+            else:
+                scores["supply_nitrogen_quality"] = 0
+
         return scores
 
     def _extract_aa_code(self, column_name: str) -> Optional[str]:

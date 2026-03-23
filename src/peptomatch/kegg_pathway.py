@@ -537,9 +537,236 @@ def analyze_ko_annotations(ko_list: list[str]) -> dict[str, Any]:
         "vitamin_biosynthesis": calculate_vitamin_biosynthesis(ko_list),
         "nucleotide_biosynthesis": calculate_nucleotide_biosynthesis(ko_list),
         "transporter_score": calculate_transporter_score(ko_list),
+        "sugar_metabolism": calculate_sugar_metabolism(ko_list),
+        "organic_acid_metabolism": calculate_organic_acid_metabolism(ko_list),
+        "mineral_transport": calculate_mineral_transport(ko_list),
         "total_kos": len(set(ko_list)),
         "source": "gcf_annotation"
     }
+
+
+# Sugar metabolism / transport KOs
+SUGAR_METABOLISM_KOS = {
+    "glucose": {
+        "name": "Glucose utilization",
+        "kos": [
+            "K02778",  # ptsG; glucose PTS system EIICB
+            "K00844",  # glk; glucokinase
+            "K00134",  # gapA; glyceraldehyde-3-phosphate dehydrogenase
+            "K02777",  # crr; glucose PTS system EIIA
+            "K00845",  # HK; hexokinase (eukaryotic)
+        ],
+        "essential_kos": ["K02778", "K00844"],
+    },
+    "fructose": {
+        "name": "Fructose utilization",
+        "kos": [
+            "K02770",  # fruA; fructose PTS system EIIBC
+            "K00882",  # fruK; 1-phosphofructokinase
+            "K02768",  # fruB; fructose PTS system EIIA
+            "K00847",  # scrK; fructokinase
+        ],
+        "essential_kos": ["K02770", "K00882"],
+    },
+    "sucrose": {
+        "name": "Sucrose utilization",
+        "kos": [
+            "K01193",  # sacA/INV; beta-fructofuranosidase (invertase)
+            "K02810",  # scrA; sucrose PTS system EIIBCA
+            "K00690",  # sacB; levansucrase
+            "K01187",  # malZ; alpha-glucosidase
+        ],
+        "essential_kos": ["K01193", "K02810"],
+    },
+    "lactose": {
+        "name": "Lactose utilization",
+        "kos": [
+            "K01220",  # lacZ; beta-galactosidase
+            "K02786",  # lacY; lactose permease (MFS transporter)
+            "K01784",  # galE; UDP-glucose 4-epimerase
+            "K00849",  # galK; galactokinase
+        ],
+        "essential_kos": ["K01220", "K02786"],
+    },
+    "maltose": {
+        "name": "Maltose utilization",
+        "kos": [
+            "K01182",  # malZ; alpha-glucosidase
+            "K10111",  # malE; maltose/maltodextrin transport protein
+            "K10112",  # malF; maltose transport system permease
+            "K10113",  # malG; maltose transport system permease
+            "K01187",  # malL; oligo-1,6-glucosidase
+        ],
+        "essential_kos": ["K01182", "K10111"],
+    },
+}
+
+# Organic acid metabolism KOs
+ORGANIC_ACID_METABOLISM_KOS = {
+    "lactate": {
+        "name": "Lactate utilization/tolerance",
+        "kos": [
+            "K00016",  # ldh; L-lactate dehydrogenase
+            "K07246",  # lctP; lactate permease (lldP)
+            "K00101",  # lldD; L-lactate dehydrogenase (cytochrome)
+            "K03778",  # dld; D-lactate dehydrogenase
+        ],
+        "essential_kos": ["K00016", "K07246"],
+    },
+    "citrate": {
+        "name": "Citrate utilization",
+        "kos": [
+            "K01647",  # gltA; citrate synthase
+            "K01643",  # citE; citrate lyase beta subunit
+            "K01644",  # citF; citrate lyase alpha subunit
+            "K16353",  # citP; citrate transporter (citM)
+        ],
+        "essential_kos": ["K01643", "K16353"],
+    },
+    "acetate": {
+        "name": "Acetate utilization",
+        "kos": [
+            "K00925",  # ackA; acetate kinase
+            "K01895",  # acs; acetyl-CoA synthetase
+            "K00625",  # pta; phosphotransacetylase
+        ],
+        "essential_kos": ["K00925", "K01895"],
+    },
+    "succinate": {
+        "name": "Succinate utilization",
+        "kos": [
+            "K00239",  # sdhA; succinate dehydrogenase flavoprotein subunit
+            "K00240",  # sdhB; succinate dehydrogenase iron-sulfur subunit
+            "K13924",  # dctA; C4-dicarboxylate transporter
+        ],
+        "essential_kos": ["K00239", "K13924"],
+    },
+    "malate": {
+        "name": "Malate utilization",
+        "kos": [
+            "K00024",  # mdh; malate dehydrogenase
+            "K00029",  # maeB; malate dehydrogenase (oxaloacetate-decarboxylating)(NADP+)
+            "K01571",  # mleA; malolactic enzyme
+        ],
+        "essential_kos": ["K00024"],
+    },
+}
+
+# Mineral transporter KOs
+MINERAL_TRANSPORT_KOS = {
+    "Mg": {
+        "name": "Magnesium transport",
+        "kos": [
+            "K06213",  # mgtE; Mg2+ transporter
+            "K01531",  # mgtA; Mg2+-importing ATPase
+            "K06215",  # corA; Mg2+ transporter CorA
+        ],
+        "essential_kos": ["K06213", "K06215"],
+    },
+    "Mn": {
+        "name": "Manganese transport",
+        "kos": [
+            "K11707",  # mntH; Mn2+ transporter (NRAMP family)
+            "K11709",  # mntA; Mn2+/Zn2+ ABC transporter substrate-binding
+            "K11710",  # mntB; Mn2+/Zn2+ ABC transporter permease
+        ],
+        "essential_kos": ["K11707", "K11709"],
+    },
+    "Fe": {
+        "name": "Iron transport",
+        "kos": [
+            "K02010",  # feoB; Fe2+ transporter FeoB
+            "K02012",  # feoA; Fe2+ transporter FeoA
+            "K01992",  # afuA; Fe3+ ABC transporter substrate-binding
+            "K11604",  # sitA; Mn2+/Fe2+ ABC transporter substrate-binding
+        ],
+        "essential_kos": ["K02010", "K01992"],
+    },
+    "K": {
+        "name": "Potassium transport",
+        "kos": [
+            "K03455",  # kdpA; K+-transporting ATPase subunit A
+            "K03456",  # kdpB; K+-transporting ATPase subunit B
+            "K03549",  # trkA; Trk K+ transport system
+            "K06217",  # kup; K+ uptake protein (low affinity)
+        ],
+        "essential_kos": ["K03455", "K03549"],
+    },
+    "Ca": {
+        "name": "Calcium transport",
+        "kos": [
+            "K01529",  # ATP2B; Ca2+-transporting ATPase
+            "K07300",  # chaA; Ca2+/H+ antiporter
+        ],
+        "essential_kos": ["K01529"],
+    },
+    "Na": {
+        "name": "Sodium transport/homeostasis",
+        "kos": [
+            "K03313",  # nhaA; Na+/H+ antiporter
+            "K03315",  # nhaB; Na+/H+ antiporter NhaB
+            "K00001",  # nhaC; Na+/H+ antiporter NhaC
+        ],
+        "essential_kos": ["K03313"],
+    },
+}
+
+
+def calculate_sugar_metabolism(ko_list: list[str]) -> dict[str, float]:
+    """Calculate sugar metabolism capability for each sugar type.
+
+    Args:
+        ko_list: List of KO IDs found in the genome
+
+    Returns:
+        Dictionary of sugar_name -> utilization completeness (0.0 to 1.0)
+    """
+    ko_set = set(ko_list)
+    result = {}
+    for sugar, pathway_info in SUGAR_METABOLISM_KOS.items():
+        completeness = calculate_pathway_completeness(
+            ko_set, pathway_info, use_essential_only=True
+        )
+        result[sugar] = completeness
+    return result
+
+
+def calculate_organic_acid_metabolism(ko_list: list[str]) -> dict[str, float]:
+    """Calculate organic acid metabolism capability.
+
+    Args:
+        ko_list: List of KO IDs found in the genome
+
+    Returns:
+        Dictionary of acid_name -> utilization completeness (0.0 to 1.0)
+    """
+    ko_set = set(ko_list)
+    result = {}
+    for acid, pathway_info in ORGANIC_ACID_METABOLISM_KOS.items():
+        completeness = calculate_pathway_completeness(
+            ko_set, pathway_info, use_essential_only=True
+        )
+        result[acid] = completeness
+    return result
+
+
+def calculate_mineral_transport(ko_list: list[str]) -> dict[str, float]:
+    """Calculate mineral transport capability.
+
+    Args:
+        ko_list: List of KO IDs found in the genome
+
+    Returns:
+        Dictionary of mineral_name -> transport completeness (0.0 to 1.0)
+    """
+    ko_set = set(ko_list)
+    result = {}
+    for mineral, pathway_info in MINERAL_TRANSPORT_KOS.items():
+        completeness = calculate_pathway_completeness(
+            ko_set, pathway_info, use_essential_only=True
+        )
+        result[mineral] = completeness
+    return result
 
 
 def get_all_pathway_kos() -> set[str]:
@@ -561,5 +788,14 @@ def get_all_pathway_kos() -> set[str]:
 
     for transporter_info in TRANSPORTER_KOS.values():
         all_kos.update(transporter_info["kos"])
+
+    for pathway_info in SUGAR_METABOLISM_KOS.values():
+        all_kos.update(pathway_info["kos"])
+
+    for pathway_info in ORGANIC_ACID_METABOLISM_KOS.values():
+        all_kos.update(pathway_info["kos"])
+
+    for pathway_info in MINERAL_TRANSPORT_KOS.values():
+        all_kos.update(pathway_info["kos"])
 
     return all_kos

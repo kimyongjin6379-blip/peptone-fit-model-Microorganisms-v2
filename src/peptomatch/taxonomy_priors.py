@@ -523,38 +523,113 @@ GENUS_SYNONYMS: dict[str, str] = {
 }
 
 
+# Default sugar/mineral/orgacid priors by metabolic group
+_SUGAR_DEFAULTS: dict[str, dict[str, float]] = {
+    "lab": {  # Lactic acid bacteria
+        "glucose": 0.9, "fructose": 0.7, "sucrose": 0.6,
+        "lactose": 0.5, "maltose": 0.6,
+    },
+    "prototroph": {  # E. coli, Bacillus etc.
+        "glucose": 1.0, "fructose": 0.8, "sucrose": 0.3,
+        "lactose": 0.7, "maltose": 0.9,
+    },
+    "generic": {
+        "glucose": 0.7, "fructose": 0.5, "sucrose": 0.3,
+        "lactose": 0.3, "maltose": 0.4,
+    },
+}
+
+_ORGACID_DEFAULTS: dict[str, dict[str, float]] = {
+    "lab": {  # LAB produces lactic acid → high tolerance
+        "lactate": 0.9, "citrate": 0.5, "acetate": 0.4,
+        "succinate": 0.3, "malate": 0.4,
+    },
+    "prototroph": {
+        "lactate": 0.5, "citrate": 0.8, "acetate": 0.7,
+        "succinate": 0.8, "malate": 0.7,
+    },
+    "generic": {
+        "lactate": 0.4, "citrate": 0.4, "acetate": 0.3,
+        "succinate": 0.4, "malate": 0.3,
+    },
+}
+
+_MINERAL_DEFAULTS: dict[str, dict[str, float]] = {
+    "lab": {
+        "Mg": 0.8, "Mn": 0.9, "Fe": 0.4, "K": 0.7, "Ca": 0.5, "Na": 0.4,
+    },
+    "prototroph": {
+        "Mg": 0.9, "Mn": 0.5, "Fe": 0.8, "K": 0.8, "Ca": 0.4, "Na": 0.5,
+    },
+    "generic": {
+        "Mg": 0.6, "Mn": 0.5, "Fe": 0.5, "K": 0.6, "Ca": 0.4, "Na": 0.4,
+    },
+}
+
+# Map genus to metabolic group for defaults
+_GENUS_METABOLIC_GROUP: dict[str, str] = {
+    "Lactiplantibacillus": "lab", "Lacticaseibacillus": "lab",
+    "Levilactobacillus": "lab", "Lentilactobacillus": "lab",
+    "Latilactobacillus": "lab", "Limosilactobacillus": "lab",
+    "Lactobacillus": "lab", "Lactococcus": "lab",
+    "Leuconostoc": "lab", "Pediococcus": "lab",
+    "Weissella": "lab", "Oenococcus": "lab",
+    "Enterococcus": "lab", "Streptococcus": "lab",
+    "Bifidobacterium": "lab",
+    "Escherichia": "prototroph", "Bacillus": "prototroph",
+    "Pseudomonas": "prototroph", "Corynebacterium": "prototroph",
+    "Streptomyces": "prototroph", "Clostridium": "prototroph",
+    "Komagataeibacter": "prototroph",
+}
+
+
 def get_taxonomy_prior(genus: str) -> dict[str, Any]:
     """Get taxonomy-based prior for a genus.
 
     Supports exact match, synonym lookup, and partial matching.
+    Adds sugar/mineral/orgacid defaults based on metabolic group.
 
     Args:
         genus: Genus name
 
     Returns:
-        Prior dictionary (copy)
+        Prior dictionary (copy) with sugar/mineral/orgacid fields
     """
     if not genus:
-        return TAXONOMY_PRIORS["_generic"].copy()
+        prior = TAXONOMY_PRIORS["_generic"].copy()
+    elif genus in TAXONOMY_PRIORS:
+        prior = TAXONOMY_PRIORS[genus].copy()
+    else:
+        # Synonym match
+        resolved = GENUS_SYNONYMS.get(genus)
+        if resolved and resolved in TAXONOMY_PRIORS:
+            prior = TAXONOMY_PRIORS[resolved].copy()
+        else:
+            # Partial match (case-insensitive)
+            prior = None
+            genus_lower = genus.lower()
+            for known_genus in TAXONOMY_PRIORS:
+                if known_genus == "_generic":
+                    continue
+                if known_genus.lower() in genus_lower or genus_lower in known_genus.lower():
+                    prior = TAXONOMY_PRIORS[known_genus].copy()
+                    break
+            if prior is None:
+                prior = TAXONOMY_PRIORS["_generic"].copy()
 
-    # Exact match
-    if genus in TAXONOMY_PRIORS:
-        return TAXONOMY_PRIORS[genus].copy()
+    # Add sugar/mineral/orgacid defaults if not already present
+    metabolic_group = _GENUS_METABOLIC_GROUP.get(genus, "generic")
 
-    # Synonym match
-    resolved = GENUS_SYNONYMS.get(genus)
-    if resolved and resolved in TAXONOMY_PRIORS:
-        return TAXONOMY_PRIORS[resolved].copy()
+    if "sugar_metabolism" not in prior:
+        prior["sugar_metabolism"] = _SUGAR_DEFAULTS.get(metabolic_group, _SUGAR_DEFAULTS["generic"]).copy()
 
-    # Partial match (case-insensitive)
-    genus_lower = genus.lower()
-    for known_genus in TAXONOMY_PRIORS:
-        if known_genus == "_generic":
-            continue
-        if known_genus.lower() in genus_lower or genus_lower in known_genus.lower():
-            return TAXONOMY_PRIORS[known_genus].copy()
+    if "organic_acid_metabolism" not in prior:
+        prior["organic_acid_metabolism"] = _ORGACID_DEFAULTS.get(metabolic_group, _ORGACID_DEFAULTS["generic"]).copy()
 
-    return TAXONOMY_PRIORS["_generic"].copy()
+    if "mineral_transport" not in prior:
+        prior["mineral_transport"] = _MINERAL_DEFAULTS.get(metabolic_group, _MINERAL_DEFAULTS["generic"]).copy()
+
+    return prior
 
 
 def list_supported_genera() -> list[str]:
