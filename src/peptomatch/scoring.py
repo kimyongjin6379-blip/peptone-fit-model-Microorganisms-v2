@@ -36,8 +36,11 @@ class PeptoneRecommender:
         self.composition_extractor = CompositionFeatureExtractor(composition_df, config)
         self.genome_prior_builder = GenomePriorBuilder(strain_df, config)
 
-        # Compute supply scores once
-        self.supply_scores = self.composition_extractor.compute_supply_scores()
+        # Compute supply scores, normalized within the peptone filter subset
+        norm_samples = self.config.get("peptone_filter", None)
+        self.supply_scores = self.composition_extractor.compute_supply_scores(
+            norm_samples=norm_samples
+        )
 
         # Get weights from config
         self.weights = self.config.get("weights", {})
@@ -445,7 +448,10 @@ class CompositionOnlyRecommender:
         self.composition_df = composition_df
         self.config = config or {}
         self.extractor = CompositionFeatureExtractor(composition_df, config)
-        self.supply_scores = self.extractor.compute_supply_scores()
+        norm_samples = self.config.get("peptone_filter", None)
+        self.supply_scores = self.extractor.compute_supply_scores(
+            norm_samples=norm_samples
+        )
 
         logger.info("Initialized CompositionOnlyRecommender (no genome priors)")
 

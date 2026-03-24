@@ -381,11 +381,16 @@ class CompositionFeatureExtractor:
 
         return all_features
 
-    def compute_supply_scores(self, weights: Optional[dict] = None) -> pd.DataFrame:
+    def compute_supply_scores(self, weights: Optional[dict] = None,
+                              norm_samples: Optional[list[str]] = None) -> pd.DataFrame:
         """Compute peptone supply scores for matching.
 
         Args:
             weights: Optional weight dictionary for different feature categories
+            norm_samples: Optional list of sample names to use as normalization
+                reference. If provided, min-max normalization uses only these
+                samples' max values. Useful for normalizing within a specific
+                manufacturer's product line (e.g. Sempio-only).
 
         Returns:
             DataFrame with supply scores per peptone
@@ -395,19 +400,27 @@ class CompositionFeatureExtractor:
         features = self.compute_all_features()
         scores = pd.DataFrame(index=features.index)
 
+        # Helper: get max value for normalization from the specified subset
+        def _norm_max(series: pd.Series) -> float:
+            if norm_samples:
+                valid = [s for s in norm_samples if s in series.index]
+                if valid:
+                    return series.loc[valid].max()
+            return series.max()
+
         # FAA abundance score (normalized)
         if "faa_total" in features.columns:
-            faa_max = features["faa_total"].max()
+            faa_max = _norm_max(features["faa_total"])
             if faa_max > 0:
-                scores["supply_faa"] = features["faa_total"] / faa_max
+                scores["supply_faa"] = (features["faa_total"] / faa_max).clip(0, 1)
             else:
                 scores["supply_faa"] = 0
 
         # TAA abundance score
         if "taa_total" in features.columns:
-            taa_max = features["taa_total"].max()
+            taa_max = _norm_max(features["taa_total"])
             if taa_max > 0:
-                scores["supply_taa"] = features["taa_total"] / taa_max
+                scores["supply_taa"] = (features["taa_total"] / taa_max).clip(0, 1)
             else:
                 scores["supply_taa"] = 0
 
@@ -423,17 +436,17 @@ class CompositionFeatureExtractor:
 
         # Vitamin score
         if "vitamin_total" in features.columns:
-            vit_max = features["vitamin_total"].max()
+            vit_max = _norm_max(features["vitamin_total"])
             if vit_max > 0:
-                scores["supply_vitamin"] = features["vitamin_total"] / vit_max
+                scores["supply_vitamin"] = (features["vitamin_total"] / vit_max).clip(0, 1)
             else:
                 scores["supply_vitamin"] = 0
 
         # Nucleotide score
         if "nucleotide_total" in features.columns:
-            nuc_max = features["nucleotide_total"].max()
+            nuc_max = _norm_max(features["nucleotide_total"])
             if nuc_max > 0:
-                scores["supply_nucleotide"] = features["nucleotide_total"] / nuc_max
+                scores["supply_nucleotide"] = (features["nucleotide_total"] / nuc_max).clip(0, 1)
             else:
                 scores["supply_nucleotide"] = 0
 
@@ -443,11 +456,19 @@ class CompositionFeatureExtractor:
         for aa in all_aa:
             faa_col = f"faa_{aa}"
             if faa_col in features.columns:
-                aa_max = features[faa_col].max()
+                aa_max = _norm_max(features[faa_col])
                 if aa_max > 0:
-                    scores[f"supply_{aa}"] = features[faa_col] / aa_max
+                    scores[f"supply_{aa}"] = (features[faa_col] / aa_max).clip(0, 1)
                 else:
                     scores[f"supply_{aa}"] = 0
+
+        # Helper for raw_df columns with norm_samples support
+        def _raw_norm_max(series: pd.Series) -> float:
+            if norm_samples:
+                valid = [s for s in norm_samples if s in series.index]
+                if valid:
+                    return series.loc[valid].max()
+            return series.max()
 
         # --- Sugar supply scores ---
         sugar_cols = self.get_columns_by_category("sugar")
@@ -465,9 +486,9 @@ class CompositionFeatureExtractor:
                     val = features.get(col, self.raw_df.get(col))
                     if val is not None:
                         raw_vals = self.raw_df[col] if col in self.raw_df.columns else pd.Series(0, index=features.index)
-                        s_max = raw_vals.max()
+                        s_max = _raw_norm_max(raw_vals)
                         if s_max > 0:
-                            scores[f"supply_sugar_{kegg_key}"] = raw_vals / s_max
+                            scores[f"supply_sugar_{kegg_key}"] = (raw_vals / s_max).clip(0, 1)
                         else:
                             scores[f"supply_sugar_{kegg_key}"] = 0
                     break
@@ -475,9 +496,9 @@ class CompositionFeatureExtractor:
         # Total sugar supply
         if sugar_cols:
             sugar_total = self.raw_df[sugar_cols].sum(axis=1)
-            s_max = sugar_total.max()
+            s_max = _raw_norm_max(sugar_total)
             if s_max > 0:
-                scores["supply_sugar_total"] = sugar_total / s_max
+                scores["supply_sugar_total"] = (sugar_total / s_max).clip(0, 1)
             else:
                 scores["supply_sugar_total"] = 0
 
@@ -495,9 +516,9 @@ class CompositionFeatureExtractor:
             for acid_name, kegg_key in orgacid_map.items():
                 if acid_name in col_lower:
                     raw_vals = self.raw_df[col] if col in self.raw_df.columns else pd.Series(0, index=features.index)
-                    s_max = raw_vals.max()
+                    s_max = _raw_norm_max(raw_vals)
                     if s_max > 0:
-                        scores[f"supply_orgacid_{kegg_key}"] = raw_vals / s_max
+                        scores[f"supply_orgacid_{kegg_key}"] = (raw_vals / s_max).clip(0, 1)
                     else:
                         scores[f"supply_orgacid_{kegg_key}"] = 0
                     break
@@ -505,53 +526,34 @@ class CompositionFeatureExtractor:
         # Total organic acid supply
         if orgacid_cols:
             orgacid_total = self.raw_df[orgacid_cols].sum(axis=1)
-            s_max = orgacid_total.max()
+            s_max = _raw_norm_max(orgacid_total)
             if s_max > 0:
-                scores["supply_orgacid_total"] = orgacid_total / s_max
+                scores["supply_orgacid_total"] = (orgacid_total / s_max).clip(0, 1)
             else:
                 scores["supply_orgacid_total"] = 0
 
         # --- Mineral supply scores ---
-        if "mineral_K" in features.columns:
-            m_max = features["mineral_K"].max()
-            if m_max > 0:
-                scores["supply_mineral_K"] = features["mineral_K"] / m_max
-            else:
-                scores["supply_mineral_K"] = 0
-
-        if "mineral_Mg" in features.columns:
-            m_max = features["mineral_Mg"].max()
-            if m_max > 0:
-                scores["supply_mineral_Mg"] = features["mineral_Mg"] / m_max
-            else:
-                scores["supply_mineral_Mg"] = 0
-
-        if "mineral_Ca" in features.columns:
-            m_max = features["mineral_Ca"].max()
-            if m_max > 0:
-                scores["supply_mineral_Ca"] = features["mineral_Ca"] / m_max
-            else:
-                scores["supply_mineral_Ca"] = 0
-
-        if "mineral_Na" in features.columns:
-            m_max = features["mineral_Na"].max()
-            if m_max > 0:
-                scores["supply_mineral_Na"] = features["mineral_Na"] / m_max
-            else:
-                scores["supply_mineral_Na"] = 0
+        for mineral in ["K", "Mg", "Ca", "Na"]:
+            col_name = f"mineral_{mineral}"
+            if col_name in features.columns:
+                m_max = _norm_max(features[col_name])
+                if m_max > 0:
+                    scores[f"supply_mineral_{mineral}"] = (features[col_name] / m_max).clip(0, 1)
+                else:
+                    scores[f"supply_mineral_{mineral}"] = 0
 
         if "mineral_total" in features.columns:
-            m_max = features["mineral_total"].max()
+            m_max = _norm_max(features["mineral_total"])
             if m_max > 0:
-                scores["supply_mineral_total"] = features["mineral_total"] / m_max
+                scores["supply_mineral_total"] = (features["mineral_total"] / m_max).clip(0, 1)
             else:
                 scores["supply_mineral_total"] = 0
 
         # --- Nitrogen quality score ---
         if "general_AN_TN_ratio" in features.columns:
-            r_max = features["general_AN_TN_ratio"].max()
+            r_max = _norm_max(features["general_AN_TN_ratio"])
             if r_max > 0:
-                scores["supply_nitrogen_quality"] = features["general_AN_TN_ratio"] / r_max
+                scores["supply_nitrogen_quality"] = (features["general_AN_TN_ratio"] / r_max).clip(0, 1)
             else:
                 scores["supply_nitrogen_quality"] = 0
 

@@ -69,7 +69,10 @@ class RecommendationExplainer:
 
         # Precompute features
         self.all_features = self.composition_extractor.compute_all_features()
-        self.supply_scores = self.composition_extractor.compute_supply_scores()
+        norm_samples = config.get("peptone_filter", None) if config else None
+        self.supply_scores = self.composition_extractor.compute_supply_scores(
+            norm_samples=norm_samples
+        )
 
     def _get_template(self, key: str) -> str:
         """Get template for current language.
