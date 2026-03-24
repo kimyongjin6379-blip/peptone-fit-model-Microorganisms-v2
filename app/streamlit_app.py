@@ -24,6 +24,10 @@ from peptomatch.taxonomy_priors import list_supported_genera
 from peptomatch.compare import StrainComparator
 from peptomatch.kegg_viz import KEGGVisualizer
 from peptomatch.blend_optimizer import BlendOptimizer
+from peptomatch.media_config import (
+    get_default_media, get_all_media_keys, get_media_display_name,
+    MEDIA_CONFIGS, get_media_responsibility,
+)
 
 st.set_page_config(
     page_title="PeptoMatch",
@@ -127,11 +131,30 @@ def render_recommend_tab():
         language = st.radio("언어", ["ko", "en"], horizontal=True)
         sempio_only = st.checkbox("Sempio 소재만", value=True)
 
+    # Auto-detect default media from genus
+    strain_info = strain_df[strain_df["strain_id"] == strain_id]
+    genus = strain_info.iloc[0].get("genus", "") if not strain_info.empty else ""
+    default_media = get_default_media(genus)
+
+    media_options = get_all_media_keys()
+    media_labels = [get_media_display_name(k) for k in media_options]
+    default_idx = media_options.index(default_media) if default_media in media_options else 0
+
+    selected_media_label = st.selectbox(
+        "배지 유형",
+        media_labels,
+        index=default_idx,
+        help="펩톤이 배지에서 담당하는 역할에 따라 가중치가 자동 조정됩니다",
+    )
+    selected_media_key = media_options[media_labels.index(selected_media_label)]
+
     if st.button("🔬 분석 시작", type="primary", width="stretch"):
         with st.spinner("유전체 기반 분석 중..."):
             recommender = PeptoneRecommender(comp_df, strain_df, config)
             pf = config.get("peptone_filter") if sempio_only else None
-            recommendations = recommender.recommend(strain_id, top_k=top_k, peptone_filter=pf)
+            recommendations = recommender.recommend(
+                strain_id, top_k=top_k, peptone_filter=pf, media_key=selected_media_key
+            )
 
             explainer = RecommendationExplainer(comp_df, strain_df, config, language=language)
             recommendations = explainer.explain_batch(strain_id, recommendations, top_n_reasons=3)
@@ -155,21 +178,15 @@ def render_recommend_tab():
         if summary.get("vitamin_deficiencies"):
             st.info(f"**비타민 결핍**: {', '.join(summary['vitamin_deficiencies'])}")
 
-        # Show strain-type weight preset info
-        demand_info = recommender.genome_prior_builder.get_demand_scores(strain_id)
-        preset_type = demand_info.get("_weight_preset", "default")
-        preset_conf = demand_info.get("_weight_confidence", "")
-        preset_desc = demand_info.get("_weight_description", "")
-        if preset_type != "default":
-            st.success(
-                f"**가중치 프리셋**: {preset_type} — {preset_desc}  \n"
-                f"**신뢰도**: {preset_conf}"
-            )
-        else:
-            st.warning(
-                f"**가중치 프리셋**: 기본값 (이 균주 유형에 대한 특화 프리셋 없음)  \n"
-                f"**신뢰도**: {preset_conf}"
-            )
+        # Show media-based responsibility info
+        media_cfg = MEDIA_CONFIGS.get(selected_media_key, {})
+        resp = media_cfg.get("responsibility", {})
+        st.success(
+            f"**배지**: {media_cfg.get('display_name', selected_media_key)}  \n"
+            f"**펩톤 농도**: {media_cfg.get('peptone_g_per_L', 25)}g/L  \n"
+            f"**펩톤 역할**: 질소원 100% | 비타민 {int(resp.get('vitamin_b', 0.5)*100)}% | "
+            f"당류 {int(resp.get('sugar', 0.5)*100)}% | 미네랄 {int(resp.get('mineral', 0.5)*100)}%"
+        )
 
         st.subheader(f"Top-{top_k} 펩톤 추천")
 
@@ -222,6 +239,24 @@ def render_blend_tab():
         top_k = st.slider("결과 수", 3, 10, 5, key="blend_topk")
         sempio_only = st.checkbox("Sempio 소재만", value=True, key="blend_sempio")
 
+    # Auto-detect default media from genus for blend tab
+    blend_strain_info = strain_df[strain_df["strain_id"] == strain_id]
+    blend_genus = blend_strain_info.iloc[0].get("genus", "") if not blend_strain_info.empty else ""
+    blend_default_media = get_default_media(blend_genus)
+
+    blend_media_options = get_all_media_keys()
+    blend_media_labels = [get_media_display_name(k) for k in blend_media_options]
+    blend_default_idx = blend_media_options.index(blend_default_media) if blend_default_media in blend_media_options else 0
+
+    blend_selected_media_label = st.selectbox(
+        "배지 유형",
+        blend_media_labels,
+        index=blend_default_idx,
+        help="펩톤이 배지에서 담당하는 역할에 따라 가중치가 자동 조정됩니다",
+        key="blend_media",
+    )
+    blend_selected_media_key = blend_media_options[blend_media_labels.index(blend_selected_media_label)]
+
     # Blend mode selection
     blend_mode = st.radio(
         "블렌딩 모드",
@@ -253,20 +288,16 @@ def render_blend_tab():
             if manual_peptones and len(manual_peptones) >= 2:
                 # Manual mode: optimize specific combination
                 from peptomatch.blend_optimizer import BlendOptimizer as BO
-                from peptomatch.scoring import get_weight_preset
                 optimizer = BO(
                     supply_scores=recommender.supply_scores,
                     min_ratio=0.1,
                     max_ratio=0.8,
                 )
                 demand_scores = recommender.genome_prior_builder.get_demand_scores(strain_id)
-                # Get strain-type weights
-                strain_info = strain_df[strain_df["strain_id"] == strain_id]
-                _genus = strain_info.iloc[0].get("genus", "") if not strain_info.empty else ""
-                _preset = get_weight_preset(_genus)
-                _sw = _preset["weights"]
+                # Get media responsibility weights
+                _responsibility = get_media_responsibility(blend_selected_media_key)
                 def _scoring_fn(supply, demand):
-                    return recommender._compute_match_score(supply, demand, _sw)
+                    return recommender._compute_match_score(supply, demand, responsibility=_responsibility)
                 try:
                     single_result = optimizer.optimize_blend(
                         manual_peptones, demand_scores, _scoring_fn
@@ -283,6 +314,7 @@ def render_blend_tab():
                     max_components=max_components,
                     top_k=top_k,
                     peptone_filter=pf,
+                    media_key=blend_selected_media_key,
                 )
 
             if not blend_results:
@@ -291,7 +323,9 @@ def render_blend_tab():
 
             # Also get single peptone top-1 for comparison
             pf = config.get("peptone_filter") if sempio_only else None
-            single_recs = recommender.recommend(strain_id, top_k=1, peptone_filter=pf)
+            single_recs = recommender.recommend(
+                strain_id, top_k=1, peptone_filter=pf, media_key=blend_selected_media_key
+            )
             best_single_score = single_recs.iloc[0]["score"] if not single_recs.empty else 0
             best_single_name = single_recs.iloc[0]["peptone"] if not single_recs.empty else "N/A"
 

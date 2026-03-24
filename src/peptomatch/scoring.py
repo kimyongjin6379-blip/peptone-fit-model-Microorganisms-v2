@@ -8,6 +8,7 @@ import pandas as pd
 
 from .composition_features import CompositionFeatureExtractor
 from .genome_prior import GenomePriorBuilder
+from .media_config import get_default_media, get_media_responsibility, MEDIA_CONFIGS
 
 logger = logging.getLogger("peptone_recommender")
 
@@ -243,7 +244,8 @@ class PeptoneRecommender:
         strain_id: int,
         top_k: int = 10,
         min_score: float = 0.0,
-        peptone_filter: Optional[list[str]] = None
+        peptone_filter: Optional[list[str]] = None,
+        media_key: Optional[str] = None,
     ) -> pd.DataFrame:
         """Get top-K peptone recommendations for a strain.
 
@@ -252,6 +254,7 @@ class PeptoneRecommender:
             top_k: Number of recommendations to return
             min_score: Minimum score threshold
             peptone_filter: If provided, only consider these peptone names
+            media_key: Media config key (e.g. "MRS_2.0"). Auto-detected if None.
 
         Returns:
             DataFrame with recommendations (peptone, score, components)
@@ -269,18 +272,28 @@ class PeptoneRecommender:
             f"{genus} {strain_row.get('species', '')}"
         )
 
-        # Get strain-type-specific weight preset
-        preset = get_weight_preset(genus)
-        strain_weights = preset["weights"]
+        # Resolve media key and get responsibility weights
+        if media_key is None:
+            media_key = get_default_media(genus)
+        responsibility = get_media_responsibility(media_key)
+        media_cfg = MEDIA_CONFIGS.get(media_key, MEDIA_CONFIGS["MRS_2.5"])
         logger.info(
-            f"Using weight preset: {preset['type']} "
-            f"(confidence: {preset['confidence']})"
+            f"Using media config: {media_key} "
+            f"({media_cfg.get('display_name', media_key)})"
         )
 
         # Get demand scores for this strain
         demand_scores = self.genome_prior_builder.get_demand_scores(strain_id)
 
-        # Store preset info in demand for UI access
+        # Store media info in demand for UI access
+        demand_scores["_media_key"] = media_key
+        demand_scores["_media_display_name"] = media_cfg.get("display_name", media_key)
+        demand_scores["_media_description"] = media_cfg.get("description", "")
+        demand_scores["_media_peptone_g_per_L"] = media_cfg.get("peptone_g_per_L", 25.0)
+        demand_scores["_media_responsibility"] = responsibility
+
+        # Also keep legacy preset info for backward compat
+        preset = get_weight_preset(genus)
         demand_scores["_weight_preset"] = preset["type"]
         demand_scores["_weight_confidence"] = preset["confidence"]
         demand_scores["_weight_description"] = preset["description"]
@@ -299,7 +312,7 @@ class PeptoneRecommender:
         for peptone_name in peptone_names:
             supply = self.supply_scores.loc[peptone_name]
             score, components = self._compute_match_score(
-                supply, demand_scores, strain_weights
+                supply, demand_scores, responsibility=responsibility
             )
 
             results.append({
@@ -323,38 +336,91 @@ class PeptoneRecommender:
         supply: pd.Series,
         demand: dict[str, float],
         strain_weights: Optional[dict[str, float]] = None,
+        responsibility: Optional[dict[str, float]] = None,
     ) -> tuple[float, dict[str, float]]:
         """Compute match score between peptone supply and strain demand.
 
         Args:
             supply: Supply scores for a peptone
             demand: Demand scores for a strain
-            strain_weights: Optional strain-type-specific weights (overrides defaults)
+            strain_weights: Legacy strain-type-specific weights (deprecated, use responsibility)
+            responsibility: Media-based peptone responsibility weights (preferred)
 
         Returns:
             Tuple of (total_score, component_scores)
         """
         components = {}
 
-        # Use strain-type weights if provided, otherwise fall back to config/defaults
-        sw = strain_weights or {}
-        defaults = STRAIN_TYPE_PRESETS["default"]["weights"]
+        if responsibility is not None:
+            # NEW: Media-based responsibility scoring
+            # Final weight = base_strength × peptone_responsibility
+            base_strength = {
+                "faa_abundance": 1.0, "taa_abundance": 0.8,
+                "mw_low": 1.2, "mw_medium": 1.0, "mw_high": 0.6,
+                "vitamin_b": 0.8, "nucleotides": 0.5,
+                "aa_match": 1.5, "transporter": 0.5,
+                "sugar": 1.5, "mineral": 1.0, "orgacid": 0.5, "nitrogen_quality": 0.7,
+            }
 
-        w = {
-            "faa_abundance": sw.get("faa_abundance", defaults["faa_abundance"]),
-            "taa_abundance": sw.get("taa_abundance", defaults["taa_abundance"]),
-            "mw_low": sw.get("mw_low", defaults["mw_low"]),
-            "mw_medium": sw.get("mw_medium", defaults["mw_medium"]),
-            "mw_high": sw.get("mw_high", defaults["mw_high"]),
-            "vitamin_b": sw.get("vitamin_b", defaults["vitamin_b"]),
-            "nucleotides": sw.get("nucleotides", defaults["nucleotides"]),
-            "aa_match": sw.get("aa_biosynthesis_gap", defaults["aa_biosynthesis_gap"]),
-            "transporter": sw.get("transporter_bonus", defaults["transporter_bonus"]),
-            "sugar": sw.get("sugar", defaults["sugar"]),
-            "mineral": sw.get("mineral", defaults["mineral"]),
-            "orgacid": sw.get("orgacid", defaults["orgacid"]),
-            "nitrogen_quality": sw.get("nitrogen_quality", defaults["nitrogen_quality"]),
-        }
+            # Map weight keys to responsibility keys
+            resp_key_map = {
+                "faa_abundance": "faa_abundance",
+                "taa_abundance": "taa_abundance",
+                "mw_low": "mw_low",
+                "mw_medium": "mw_medium",
+                "mw_high": "mw_high",
+                "vitamin_b": "vitamin_b",
+                "nucleotides": "nucleotides",
+                "aa_match": "aa_biosynthesis_gap",
+                "transporter": "transporter_bonus",
+                "sugar": "sugar",
+                "mineral": "mineral",
+                "orgacid": "orgacid",
+                "nitrogen_quality": "nitrogen_quality",
+            }
+
+            resp = responsibility
+            w = {}
+            for wkey, bval in base_strength.items():
+                rkey = resp_key_map.get(wkey, wkey)
+                w[wkey] = bval * resp.get(rkey, 0.5)
+        elif strain_weights is not None:
+            # LEGACY: strain-type-specific weights (backward compat)
+            sw = strain_weights
+            defaults = STRAIN_TYPE_PRESETS["default"]["weights"]
+            w = {
+                "faa_abundance": sw.get("faa_abundance", defaults["faa_abundance"]),
+                "taa_abundance": sw.get("taa_abundance", defaults["taa_abundance"]),
+                "mw_low": sw.get("mw_low", defaults["mw_low"]),
+                "mw_medium": sw.get("mw_medium", defaults["mw_medium"]),
+                "mw_high": sw.get("mw_high", defaults["mw_high"]),
+                "vitamin_b": sw.get("vitamin_b", defaults["vitamin_b"]),
+                "nucleotides": sw.get("nucleotides", defaults["nucleotides"]),
+                "aa_match": sw.get("aa_biosynthesis_gap", defaults["aa_biosynthesis_gap"]),
+                "transporter": sw.get("transporter_bonus", defaults["transporter_bonus"]),
+                "sugar": sw.get("sugar", defaults["sugar"]),
+                "mineral": sw.get("mineral", defaults["mineral"]),
+                "orgacid": sw.get("orgacid", defaults["orgacid"]),
+                "nitrogen_quality": sw.get("nitrogen_quality", defaults["nitrogen_quality"]),
+            }
+        else:
+            # Fallback: use default preset weights
+            defaults = STRAIN_TYPE_PRESETS["default"]["weights"]
+            w = {
+                "faa_abundance": defaults["faa_abundance"],
+                "taa_abundance": defaults["taa_abundance"],
+                "mw_low": defaults["mw_low"],
+                "mw_medium": defaults["mw_medium"],
+                "mw_high": defaults["mw_high"],
+                "vitamin_b": defaults["vitamin_b"],
+                "nucleotides": defaults["nucleotides"],
+                "aa_match": defaults["aa_biosynthesis_gap"],
+                "transporter": defaults["transporter_bonus"],
+                "sugar": defaults["sugar"],
+                "mineral": defaults["mineral"],
+                "orgacid": defaults["orgacid"],
+                "nitrogen_quality": defaults["nitrogen_quality"],
+            }
 
         # 1. Base composition scores (supply only)
         faa_score = supply.get("supply_faa", 0) * w["faa_abundance"]
@@ -596,6 +662,7 @@ class PeptoneRecommender:
         peptone_filter: Optional[list[str]] = None,
         min_ratio: float = 0.1,
         max_ratio: float = 0.8,
+        media_key: Optional[str] = None,
     ) -> list:
         """Get top blended peptone recommendations for a strain.
 
@@ -606,17 +673,21 @@ class PeptoneRecommender:
             peptone_filter: Optional list of peptone names to consider
             min_ratio: Minimum ratio per component
             max_ratio: Maximum ratio per component
+            media_key: Media config key (e.g. "MRS_2.0"). Auto-detected if None.
 
         Returns:
             List of BlendResult objects
         """
         from .blend_optimizer import BlendOptimizer
 
-        # Get strain info for weight preset
+        # Get strain info for media selection
         strain_info = self.strain_df[self.strain_df["strain_id"] == strain_id]
         genus = strain_info.iloc[0].get("genus", "") if not strain_info.empty else ""
-        preset = get_weight_preset(genus)
-        strain_weights = preset["weights"]
+
+        # Resolve media key and get responsibility weights
+        if media_key is None:
+            media_key = get_default_media(genus)
+        responsibility = get_media_responsibility(media_key)
 
         # Get demand scores
         demand_scores = self.genome_prior_builder.get_demand_scores(strain_id)
@@ -625,9 +696,9 @@ class PeptoneRecommender:
         if peptone_filter is None:
             peptone_filter = self.config.get("peptone_filter", None)
 
-        # Create scoring function with strain-type weights baked in
+        # Create scoring function with media responsibility baked in
         def scoring_fn_with_weights(supply, demand):
-            return self._compute_match_score(supply, demand, strain_weights)
+            return self._compute_match_score(supply, demand, responsibility=responsibility)
 
         # Create optimizer
         optimizer = BlendOptimizer(
