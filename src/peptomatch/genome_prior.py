@@ -115,15 +115,24 @@ class GenomePriorBuilder:
 
         species = strain_info.get("species", "")
 
-        # Try GCF-based prior first (NCBI download + KofamScan/GFF3)
-        if gcf and pd.notna(gcf):
-            prior = self._build_gcf_prior(gcf, strain_id, genus)
-
-        # Try KEGG REST API (works on Streamlit Cloud)
-        if prior is None and genus:
+        # 1순위: KEGG REST API (KO 수가 가장 많음, ~800-2000개)
+        if genus:
             prior = self._build_kegg_prior(genus, species, strain_id)
 
-        # Fall back to taxonomy prior
+        # 2순위: GCF-based (KEGG 실패 시, 또는 KEGG KO가 부족할 때)
+        if gcf and pd.notna(gcf):
+            if prior is None:
+                prior = self._build_gcf_prior(gcf, strain_id, genus)
+            elif prior.get("ko_count", 0) < 100:
+                logger.info(
+                    f"KEGG KO count too low ({prior.get('ko_count', 0)}), "
+                    f"trying GCF annotation for {gcf}"
+                )
+                gcf_prior = self._build_gcf_prior(gcf, strain_id, genus)
+                if gcf_prior and gcf_prior.get("ko_count", 0) > prior.get("ko_count", 0):
+                    prior = gcf_prior
+
+        # 3순위: Fall back to taxonomy prior
         if prior is None:
             prior = get_taxonomy_prior(genus)
             prior["source"] = "taxonomy_fallback"
