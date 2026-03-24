@@ -155,6 +155,22 @@ def render_recommend_tab():
         if summary.get("vitamin_deficiencies"):
             st.info(f"**비타민 결핍**: {', '.join(summary['vitamin_deficiencies'])}")
 
+        # Show strain-type weight preset info
+        demand_info = recommender.genome_prior_builder.get_demand_scores(strain_id)
+        preset_type = demand_info.get("_weight_preset", "default")
+        preset_conf = demand_info.get("_weight_confidence", "")
+        preset_desc = demand_info.get("_weight_description", "")
+        if preset_type != "default":
+            st.success(
+                f"**가중치 프리셋**: {preset_type} — {preset_desc}  \n"
+                f"**신뢰도**: {preset_conf}"
+            )
+        else:
+            st.warning(
+                f"**가중치 프리셋**: 기본값 (이 균주 유형에 대한 특화 프리셋 없음)  \n"
+                f"**신뢰도**: {preset_conf}"
+            )
+
         st.subheader(f"Top-{top_k} 펩톤 추천")
 
         fig = px.bar(
@@ -237,15 +253,23 @@ def render_blend_tab():
             if manual_peptones and len(manual_peptones) >= 2:
                 # Manual mode: optimize specific combination
                 from peptomatch.blend_optimizer import BlendOptimizer as BO
+                from peptomatch.scoring import get_weight_preset
                 optimizer = BO(
                     supply_scores=recommender.supply_scores,
                     min_ratio=0.1,
                     max_ratio=0.8,
                 )
                 demand_scores = recommender.genome_prior_builder.get_demand_scores(strain_id)
+                # Get strain-type weights
+                strain_info = strain_df[strain_df["strain_id"] == strain_id]
+                _genus = strain_info.iloc[0].get("genus", "") if not strain_info.empty else ""
+                _preset = get_weight_preset(_genus)
+                _sw = _preset["weights"]
+                def _scoring_fn(supply, demand):
+                    return recommender._compute_match_score(supply, demand, _sw)
                 try:
                     single_result = optimizer.optimize_blend(
-                        manual_peptones, demand_scores, recommender._compute_match_score
+                        manual_peptones, demand_scores, _scoring_fn
                     )
                     blend_results = [single_result]
                 except Exception as e:

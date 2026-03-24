@@ -11,6 +11,190 @@ from .genome_prior import GenomePriorBuilder
 
 logger = logging.getLogger("peptone_recommender")
 
+# ============================================================================
+# Strain-type-specific weight presets (literature-based)
+#
+# Rationale:
+# - LAB (lactic acid bacteria): fermentative, carbon-source dependent,
+#   highly auxotrophic but sugar is often the growth-limiting factor
+# - Enterobacteriaceae (E. coli etc.): strong biosynthetic capability,
+#   AA supplementation is the main benefit of peptone
+# - Bacillus: versatile metabolism, balanced needs
+# - Corynebacterium: AA-producing but often needs vitamins/minerals
+# - Bifidobacterium: similar to LAB but stricter anaerobe, sugar-dependent
+#
+# Note: These are educated estimates. Will be calibrated with experimental
+# data when available. Confidence level is indicated per preset.
+# ============================================================================
+
+STRAIN_TYPE_PRESETS: dict[str, dict] = {
+    "LAB": {
+        "description": "Lactic Acid Bacteria (fermentative, sugar-dependent)",
+        "confidence": "medium (literature-based, not yet experimentally validated)",
+        "weights": {
+            "faa_abundance": 0.6,     # reduced from 1.0 — FAA less dominant
+            "taa_abundance": 0.5,     # reduced from 0.8
+            "mw_low": 1.0,
+            "mw_medium": 0.8,
+            "mw_high": 0.4,
+            "vitamin_b": 0.8,         # LAB often auxotrophic for B vitamins
+            "nucleotides": 0.5,
+            "aa_biosynthesis_gap": 1.0,  # reduced from 1.5 — still important but not dominant
+            "transporter_bonus": 0.5,
+            "sugar": 3.0,             # doubled from 1.5 — carbon source is critical
+            "mineral": 1.5,           # increased from 0.8 — Mg/Mn important for LAB
+            "orgacid": 0.8,           # increased — LAB can utilize organic acids
+            "nitrogen_quality": 0.8,
+        },
+    },
+    "Enterobacteriaceae": {
+        "description": "E. coli, Salmonella, etc. (strong biosynthesis, AA-focused)",
+        "confidence": "medium (literature-based)",
+        "weights": {
+            "faa_abundance": 1.2,
+            "taa_abundance": 1.0,
+            "mw_low": 1.2,
+            "mw_medium": 1.0,
+            "mw_high": 0.6,
+            "vitamin_b": 0.3,         # E. coli synthesizes most vitamins
+            "nucleotides": 0.3,
+            "aa_biosynthesis_gap": 2.0,  # AA matching is most important
+            "transporter_bonus": 0.5,
+            "sugar": 0.8,             # can use minimal glucose
+            "mineral": 0.5,
+            "orgacid": 0.3,
+            "nitrogen_quality": 0.8,
+        },
+    },
+    "Bacillus": {
+        "description": "Bacillus spp. (versatile, balanced needs)",
+        "confidence": "medium (literature-based)",
+        "weights": {
+            "faa_abundance": 1.0,
+            "taa_abundance": 0.8,
+            "mw_low": 1.0,
+            "mw_medium": 1.0,
+            "mw_high": 0.6,
+            "vitamin_b": 0.5,
+            "nucleotides": 0.4,
+            "aa_biosynthesis_gap": 1.5,
+            "transporter_bonus": 0.5,
+            "sugar": 1.5,
+            "mineral": 1.0,
+            "orgacid": 0.5,
+            "nitrogen_quality": 0.7,
+        },
+    },
+    "Corynebacterium": {
+        "description": "Corynebacterium spp. (AA producer, vitamin-dependent)",
+        "confidence": "low (limited literature)",
+        "weights": {
+            "faa_abundance": 0.8,
+            "taa_abundance": 0.8,
+            "mw_low": 1.0,
+            "mw_medium": 1.0,
+            "mw_high": 0.6,
+            "vitamin_b": 1.2,         # often needs B vitamins
+            "nucleotides": 0.5,
+            "aa_biosynthesis_gap": 1.2,
+            "transporter_bonus": 0.4,
+            "sugar": 1.5,
+            "mineral": 1.2,           # trace metals important
+            "orgacid": 0.5,
+            "nitrogen_quality": 0.6,
+        },
+    },
+    "Bifidobacterium": {
+        "description": "Bifidobacterium spp. (strict anaerobe, sugar-dependent)",
+        "confidence": "medium (literature-based)",
+        "weights": {
+            "faa_abundance": 0.7,
+            "taa_abundance": 0.6,
+            "mw_low": 1.0,
+            "mw_medium": 0.8,
+            "mw_high": 0.4,
+            "vitamin_b": 0.6,
+            "nucleotides": 0.6,
+            "aa_biosynthesis_gap": 1.0,
+            "transporter_bonus": 0.5,
+            "sugar": 2.5,             # highly sugar-dependent
+            "mineral": 1.2,
+            "orgacid": 0.5,
+            "nitrogen_quality": 0.7,
+        },
+    },
+    "default": {
+        "description": "Default weights (no strain-type-specific adjustment)",
+        "confidence": "low (generic)",
+        "weights": {
+            "faa_abundance": 1.0,
+            "taa_abundance": 0.8,
+            "mw_low": 1.2,
+            "mw_medium": 1.0,
+            "mw_high": 0.6,
+            "vitamin_b": 0.5,
+            "nucleotides": 0.4,
+            "aa_biosynthesis_gap": 1.5,
+            "transporter_bonus": 0.5,
+            "sugar": 1.5,
+            "mineral": 0.8,
+            "orgacid": 0.5,
+            "nitrogen_quality": 0.6,
+        },
+    },
+}
+
+# Genus → strain type mapping
+GENUS_TO_TYPE: dict[str, str] = {
+    # LAB
+    "Lactobacillus": "LAB",
+    "Lactiplantibacillus": "LAB",
+    "Lacticaseibacillus": "LAB",
+    "Levilactobacillus": "LAB",
+    "Lentilactobacillus": "LAB",
+    "Latilactobacillus": "LAB",
+    "Limosilactobacillus": "LAB",
+    "Ligilactobacillus": "LAB",
+    "Lactococcus": "LAB",
+    "Streptococcus": "LAB",
+    "Leuconostoc": "LAB",
+    "Pediococcus": "LAB",
+    "Enterococcus": "LAB",
+    "Weissella": "LAB",
+    # Enterobacteriaceae
+    "Escherichia": "Enterobacteriaceae",
+    "Salmonella": "Enterobacteriaceae",
+    "Klebsiella": "Enterobacteriaceae",
+    "Enterobacter": "Enterobacteriaceae",
+    "Serratia": "Enterobacteriaceae",
+    # Bacillus
+    "Bacillus": "Bacillus",
+    "Priestia": "Bacillus",
+    "Brevibacillus": "Bacillus",
+    # Corynebacterium
+    "Corynebacterium": "Corynebacterium",
+    "Brevibacterium": "Corynebacterium",
+    # Bifidobacterium
+    "Bifidobacterium": "Bifidobacterium",
+}
+
+
+def get_strain_type(genus: str) -> str:
+    """Get strain type preset name from genus."""
+    return GENUS_TO_TYPE.get(genus, "default")
+
+
+def get_weight_preset(genus: str) -> dict:
+    """Get weight preset for a genus. Returns (preset_name, weights, confidence)."""
+    strain_type = get_strain_type(genus)
+    preset = STRAIN_TYPE_PRESETS[strain_type]
+    return {
+        "type": strain_type,
+        "weights": preset["weights"],
+        "confidence": preset["confidence"],
+        "description": preset["description"],
+    }
+
 
 class PeptoneRecommender:
     """Rule-based peptone recommendation system."""
@@ -72,13 +256,27 @@ class PeptoneRecommender:
             raise ValueError(f"Strain ID {strain_id} not found")
 
         strain_row = strain_info.iloc[0]
+        genus = strain_row.get("genus", "")
         logger.info(
             f"Computing recommendations for strain {strain_id}: "
-            f"{strain_row.get('genus', '')} {strain_row.get('species', '')}"
+            f"{genus} {strain_row.get('species', '')}"
+        )
+
+        # Get strain-type-specific weight preset
+        preset = get_weight_preset(genus)
+        strain_weights = preset["weights"]
+        logger.info(
+            f"Using weight preset: {preset['type']} "
+            f"(confidence: {preset['confidence']})"
         )
 
         # Get demand scores for this strain
         demand_scores = self.genome_prior_builder.get_demand_scores(strain_id)
+
+        # Store preset info in demand for UI access
+        demand_scores["_weight_preset"] = preset["type"]
+        demand_scores["_weight_confidence"] = preset["confidence"]
+        demand_scores["_weight_description"] = preset["description"]
 
         # Determine which peptones to score
         if peptone_filter is None:
@@ -93,7 +291,9 @@ class PeptoneRecommender:
 
         for peptone_name in peptone_names:
             supply = self.supply_scores.loc[peptone_name]
-            score, components = self._compute_match_score(supply, demand_scores)
+            score, components = self._compute_match_score(
+                supply, demand_scores, strain_weights
+            )
 
             results.append({
                 "peptone": peptone_name,
@@ -114,35 +314,39 @@ class PeptoneRecommender:
     def _compute_match_score(
         self,
         supply: pd.Series,
-        demand: dict[str, float]
+        demand: dict[str, float],
+        strain_weights: Optional[dict[str, float]] = None,
     ) -> tuple[float, dict[str, float]]:
         """Compute match score between peptone supply and strain demand.
 
         Args:
             supply: Supply scores for a peptone
             demand: Demand scores for a strain
+            strain_weights: Optional strain-type-specific weights (overrides defaults)
 
         Returns:
             Tuple of (total_score, component_scores)
         """
         components = {}
 
-        # Weight defaults
+        # Use strain-type weights if provided, otherwise fall back to config/defaults
+        sw = strain_weights or {}
+        defaults = STRAIN_TYPE_PRESETS["default"]["weights"]
+
         w = {
-            "faa_abundance": self.weights.get("faa_abundance", 1.0),
-            "taa_abundance": self.weights.get("taa_abundance", 0.8),
-            "mw_low": self.weights.get("mw_low", 1.2),
-            "mw_medium": self.weights.get("mw_medium", 1.0),
-            "mw_high": self.weights.get("mw_high", 0.6),
-            "vitamin_b": self.weights.get("vitamin_b", 0.5),
-            "nucleotides": self.weights.get("nucleotides", 0.4),
-            "aa_match": self.weights.get("aa_biosynthesis_gap", 1.5),
-            "transporter": self.weights.get("transporter_bonus", 0.5),
-            # New weights
-            "sugar": self.weights.get("sugar", 1.5),
-            "mineral": self.weights.get("mineral", 0.8),
-            "orgacid": self.weights.get("orgacid", 0.5),
-            "nitrogen_quality": self.weights.get("nitrogen_quality", 0.6),
+            "faa_abundance": sw.get("faa_abundance", defaults["faa_abundance"]),
+            "taa_abundance": sw.get("taa_abundance", defaults["taa_abundance"]),
+            "mw_low": sw.get("mw_low", defaults["mw_low"]),
+            "mw_medium": sw.get("mw_medium", defaults["mw_medium"]),
+            "mw_high": sw.get("mw_high", defaults["mw_high"]),
+            "vitamin_b": sw.get("vitamin_b", defaults["vitamin_b"]),
+            "nucleotides": sw.get("nucleotides", defaults["nucleotides"]),
+            "aa_match": sw.get("aa_biosynthesis_gap", defaults["aa_biosynthesis_gap"]),
+            "transporter": sw.get("transporter_bonus", defaults["transporter_bonus"]),
+            "sugar": sw.get("sugar", defaults["sugar"]),
+            "mineral": sw.get("mineral", defaults["mineral"]),
+            "orgacid": sw.get("orgacid", defaults["orgacid"]),
+            "nitrogen_quality": sw.get("nitrogen_quality", defaults["nitrogen_quality"]),
         }
 
         # 1. Base composition scores (supply only)
@@ -401,12 +605,22 @@ class PeptoneRecommender:
         """
         from .blend_optimizer import BlendOptimizer
 
+        # Get strain info for weight preset
+        strain_info = self.strain_df[self.strain_df["strain_id"] == strain_id]
+        genus = strain_info.iloc[0].get("genus", "") if not strain_info.empty else ""
+        preset = get_weight_preset(genus)
+        strain_weights = preset["weights"]
+
         # Get demand scores
         demand_scores = self.genome_prior_builder.get_demand_scores(strain_id)
 
         # Determine peptone filter
         if peptone_filter is None:
             peptone_filter = self.config.get("peptone_filter", None)
+
+        # Create scoring function with strain-type weights baked in
+        def scoring_fn_with_weights(supply, demand):
+            return self._compute_match_score(supply, demand, strain_weights)
 
         # Create optimizer
         optimizer = BlendOptimizer(
@@ -418,7 +632,7 @@ class PeptoneRecommender:
         # Find best blends
         results = optimizer.find_best_blends(
             demand_scores=demand_scores,
-            scoring_fn=self._compute_match_score,
+            scoring_fn=scoring_fn_with_weights,
             peptone_filter=peptone_filter,
             max_components=max_components,
             top_k=top_k,
