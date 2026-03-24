@@ -29,22 +29,27 @@ logger = logging.getLogger("peptone_recommender")
 
 STRAIN_TYPE_PRESETS: dict[str, dict] = {
     "LAB": {
-        "description": "Lactic Acid Bacteria (fermentative, sugar-dependent)",
+        "description": "Lactic Acid Bacteria (fermentative, peptone as nitrogen source)",
         "confidence": "medium (literature-based, not yet experimentally validated)",
+        # Design rationale:
+        # Peptone is added at only 2.0-2.5% in media. Base medium (MRS etc.)
+        # already provides ~20g/L glucose. Peptone's primary role is nitrogen/
+        # peptide supply, NOT carbon source. Sugar in peptone is a minor bonus.
+        # Minerals from peptone can supplement base medium salts.
         "weights": {
-            "faa_abundance": 0.6,     # reduced from 1.0 — FAA less dominant
-            "taa_abundance": 0.5,     # reduced from 0.8
-            "mw_low": 1.0,
+            "faa_abundance": 0.9,     # FAA is important — LAB peptide transporter active
+            "taa_abundance": 0.7,     # TAA provides peptide-bound AA
+            "mw_low": 1.2,            # di/tri-peptides well absorbed by LAB
             "mw_medium": 0.8,
             "mw_high": 0.4,
             "vitamin_b": 0.8,         # LAB often auxotrophic for B vitamins
             "nucleotides": 0.5,
-            "aa_biosynthesis_gap": 1.0,  # reduced from 1.5 — still important but not dominant
-            "transporter_bonus": 0.5,
-            "sugar": 3.0,             # doubled from 1.5 — carbon source is critical
-            "mineral": 1.5,           # increased from 0.8 — Mg/Mn important for LAB
-            "orgacid": 0.8,           # increased — LAB can utilize organic acids
-            "nitrogen_quality": 0.8,
+            "aa_biosynthesis_gap": 1.3,  # AA matching still important for LAB
+            "transporter_bonus": 0.6,
+            "sugar": 0.8,             # minor bonus only — base medium supplies most sugar
+            "mineral": 1.2,           # Mg/Mn important, supplements base medium
+            "orgacid": 0.3,           # small bonus — LAB tolerant but base medium handles pH
+            "nitrogen_quality": 0.8,  # AN/TN ratio matters for nitrogen utilization
         },
     },
     "Enterobacteriaceae": {
@@ -60,9 +65,9 @@ STRAIN_TYPE_PRESETS: dict[str, dict] = {
             "nucleotides": 0.3,
             "aa_biosynthesis_gap": 2.0,  # AA matching is most important
             "transporter_bonus": 0.5,
-            "sugar": 0.8,             # can use minimal glucose
-            "mineral": 0.5,
-            "orgacid": 0.3,
+            "sugar": 0.3,             # base medium provides glucose; peptone sugar negligible
+            "mineral": 0.4,           # base medium salts sufficient for E. coli
+            "orgacid": 0.2,
             "nitrogen_quality": 0.8,
         },
     },
@@ -79,9 +84,9 @@ STRAIN_TYPE_PRESETS: dict[str, dict] = {
             "nucleotides": 0.4,
             "aa_biosynthesis_gap": 1.5,
             "transporter_bonus": 0.5,
-            "sugar": 1.5,
-            "mineral": 1.0,
-            "orgacid": 0.5,
+            "sugar": 0.5,             # base medium supplies carbon
+            "mineral": 0.8,           # Bacillus needs Mn/Mg for sporulation enzymes
+            "orgacid": 0.3,
             "nitrogen_quality": 0.7,
         },
     },
@@ -98,34 +103,36 @@ STRAIN_TYPE_PRESETS: dict[str, dict] = {
             "nucleotides": 0.5,
             "aa_biosynthesis_gap": 1.2,
             "transporter_bonus": 0.4,
-            "sugar": 1.5,
-            "mineral": 1.2,           # trace metals important
-            "orgacid": 0.5,
+            "sugar": 0.4,             # base medium provides carbon
+            "mineral": 1.0,           # trace metals important for AA production
+            "orgacid": 0.3,
             "nitrogen_quality": 0.6,
         },
     },
     "Bifidobacterium": {
-        "description": "Bifidobacterium spp. (strict anaerobe, sugar-dependent)",
+        "description": "Bifidobacterium spp. (strict anaerobe, nitrogen-focused)",
         "confidence": "medium (literature-based)",
         "weights": {
-            "faa_abundance": 0.7,
-            "taa_abundance": 0.6,
+            "faa_abundance": 0.8,
+            "taa_abundance": 0.7,
             "mw_low": 1.0,
             "mw_medium": 0.8,
             "mw_high": 0.4,
             "vitamin_b": 0.6,
             "nucleotides": 0.6,
-            "aa_biosynthesis_gap": 1.0,
+            "aa_biosynthesis_gap": 1.2,
             "transporter_bonus": 0.5,
-            "sugar": 2.5,             # highly sugar-dependent
-            "mineral": 1.2,
-            "orgacid": 0.5,
+            "sugar": 0.8,             # minor bonus — base medium supplies sugar
+            "mineral": 1.0,
+            "orgacid": 0.3,
             "nitrogen_quality": 0.7,
         },
     },
     "default": {
-        "description": "Default weights (no strain-type-specific adjustment)",
+        "description": "Default weights — peptone as nitrogen/peptide source",
         "confidence": "low (generic)",
+        # Peptone at 2-2.5% in media: primary role is nitrogen supply.
+        # Sugar/mineral are secondary supplements to base medium.
         "weights": {
             "faa_abundance": 1.0,
             "taa_abundance": 0.8,
@@ -136,9 +143,9 @@ STRAIN_TYPE_PRESETS: dict[str, dict] = {
             "nucleotides": 0.4,
             "aa_biosynthesis_gap": 1.5,
             "transporter_bonus": 0.5,
-            "sugar": 1.5,
-            "mineral": 0.8,
-            "orgacid": 0.5,
+            "sugar": 0.5,             # minor — base medium provides most sugar
+            "mineral": 0.6,           # supplementary to base medium salts
+            "orgacid": 0.3,           # small factor
             "nitrogen_quality": 0.6,
         },
     },
