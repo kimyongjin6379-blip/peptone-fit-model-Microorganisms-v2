@@ -415,21 +415,40 @@ def calculate_pathway_completeness(
 ) -> float:
     """Calculate completeness of a biosynthesis pathway.
 
+    Supports two modes:
+    - essential_ko_groups (OR groups): each group is an alternative way to
+      fulfill one function. Score = fraction of groups with at least one hit.
+      Example: glucose transport has multiple alternatives (ptsG, galP, glcU).
+    - essential_kos (legacy AND mode): all listed KOs must be present.
+
     Args:
         ko_list: List of KO IDs found in the genome
-        pathway_kos: Dictionary with 'kos' and 'essential_kos' keys
-        use_essential_only: If True, only check essential KOs
+        pathway_kos: Dictionary with 'kos' and optionally
+            'essential_ko_groups' or 'essential_kos' keys
+        use_essential_only: If True, check essential KOs/groups
 
     Returns:
         Completeness score (0.0 to 1.0)
     """
+    # OR-group mode: each group represents one function with alternatives
+    if use_essential_only and "essential_ko_groups" in pathway_kos:
+        groups = pathway_kos["essential_ko_groups"]
+        if not groups:
+            return 1.0
+        satisfied = sum(
+            1 for group in groups
+            if any(ko in ko_list for ko in group)
+        )
+        return satisfied / len(groups)
+
+    # Legacy AND mode
     if use_essential_only and "essential_kos" in pathway_kos:
         target_kos = pathway_kos["essential_kos"]
     else:
         target_kos = pathway_kos["kos"]
 
     if not target_kos:
-        return 1.0  # No KOs to check, assume complete
+        return 1.0
 
     found = sum(1 for ko in target_kos if ko in ko_list)
     return found / len(target_kos)
@@ -555,8 +574,19 @@ SUGAR_METABOLISM_KOS = {
             "K00134",  # gapA; glyceraldehyde-3-phosphate dehydrogenase
             "K02777",  # crr; glucose PTS system EIIA
             "K00845",  # HK; hexokinase (eukaryotic)
+            "K07025",  # galP; galactose:H+ symporter (alt glucose transporter)
+            "K20118",  # glcU; glucose uptake protein
+            "K02750",  # PTS-Glc-EIIA; glucose PTS system EIIA (alt)
         ],
-        "essential_kos": ["K02778", "K00844"],
+        # OR groups: any ONE group satisfied → can use glucose
+        "essential_ko_groups": [
+            ["K02778"],           # ptsG (main PTS)
+            ["K02777", "K02750"], # crr or alt PTS EIIA
+            ["K07025"],           # galP (alternative transporter)
+            ["K20118"],           # glcU (alternative transporter)
+            ["K00844"],           # glucokinase (phosphorylation)
+            ["K00845"],           # hexokinase (eukaryotic)
+        ],
     },
     "fructose": {
         "name": "Fructose utilization",
@@ -566,7 +596,11 @@ SUGAR_METABOLISM_KOS = {
             "K02768",  # fruB; fructose PTS system EIIA
             "K00847",  # scrK; fructokinase
         ],
-        "essential_kos": ["K02770", "K00882"],
+        "essential_ko_groups": [
+            ["K02770"],  # fruA (PTS)
+            ["K00882"],  # fruK
+            ["K00847"],  # fructokinase (alt)
+        ],
     },
     "sucrose": {
         "name": "Sucrose utilization",
@@ -576,17 +610,32 @@ SUGAR_METABOLISM_KOS = {
             "K00690",  # sacB; levansucrase
             "K01187",  # malZ; alpha-glucosidase
         ],
-        "essential_kos": ["K01193", "K02810"],
+        "essential_ko_groups": [
+            ["K01193"],  # invertase
+            ["K02810"],  # sucrose PTS
+            ["K00690"],  # levansucrase (alt)
+        ],
     },
     "lactose": {
         "name": "Lactose utilization",
         "kos": [
-            "K01220",  # lacZ; beta-galactosidase
+            "K01220",  # lacZ; beta-galactosidase (class 1)
             "K02786",  # lacY; lactose permease (MFS transporter)
             "K01784",  # galE; UDP-glucose 4-epimerase
             "K00849",  # galK; galactokinase
+            "K12111",  # lacA; beta-galactosidase (class 2)
+            "K12308",  # bgaB; beta-galactosidase (class 3)
+            "K02793",  # PTS-Lac-EIIA; lactose PTS
+            "K02794",  # PTS-Lac-EIIB; lactose PTS
+            "K02795",  # PTS-Lac-EIIC; lactose PTS
         ],
-        "essential_kos": ["K01220", "K02786"],
+        "essential_ko_groups": [
+            ["K01220"],          # lacZ
+            ["K12111"],          # lacA (alt beta-gal)
+            ["K12308"],          # bgaB (alt beta-gal)
+            ["K02793"],          # lactose PTS EIIA
+            ["K02786"],          # lacY permease
+        ],
     },
     "maltose": {
         "name": "Maltose utilization",
@@ -596,8 +645,14 @@ SUGAR_METABOLISM_KOS = {
             "K10112",  # malF; maltose transport system permease
             "K10113",  # malG; maltose transport system permease
             "K01187",  # malL; oligo-1,6-glucosidase
+            "K01176",  # amyA; alpha-amylase
         ],
-        "essential_kos": ["K01182", "K10111"],
+        "essential_ko_groups": [
+            ["K01182"],  # malZ
+            ["K10111"],  # malE
+            ["K01187"],  # malL (alt)
+            ["K01176"],  # amylase (alt)
+        ],
     },
 }
 
@@ -611,7 +666,12 @@ ORGANIC_ACID_METABOLISM_KOS = {
             "K00101",  # lldD; L-lactate dehydrogenase (cytochrome)
             "K03778",  # dld; D-lactate dehydrogenase
         ],
-        "essential_kos": ["K00016", "K07246"],
+        "essential_ko_groups": [
+            ["K00016"],  # ldh (any lactate dehydrogenase)
+            ["K00101"],  # lldD (alt)
+            ["K03778"],  # dld (alt)
+            ["K07246"],  # lctP permease
+        ],
     },
     "citrate": {
         "name": "Citrate utilization",
@@ -621,7 +681,11 @@ ORGANIC_ACID_METABOLISM_KOS = {
             "K01644",  # citF; citrate lyase alpha subunit
             "K16353",  # citP; citrate transporter (citM)
         ],
-        "essential_kos": ["K01643", "K16353"],
+        "essential_ko_groups": [
+            ["K01643"],  # citE
+            ["K01644"],  # citF
+            ["K16353"],  # citP transporter
+        ],
     },
     "acetate": {
         "name": "Acetate utilization",
@@ -630,7 +694,11 @@ ORGANIC_ACID_METABOLISM_KOS = {
             "K01895",  # acs; acetyl-CoA synthetase
             "K00625",  # pta; phosphotransacetylase
         ],
-        "essential_kos": ["K00925", "K01895"],
+        "essential_ko_groups": [
+            ["K00925"],  # ackA
+            ["K01895"],  # acs (alt)
+            ["K00625"],  # pta
+        ],
     },
     "succinate": {
         "name": "Succinate utilization",
@@ -639,16 +707,23 @@ ORGANIC_ACID_METABOLISM_KOS = {
             "K00240",  # sdhB; succinate dehydrogenase iron-sulfur subunit
             "K13924",  # dctA; C4-dicarboxylate transporter
         ],
-        "essential_kos": ["K00239", "K13924"],
+        "essential_ko_groups": [
+            ["K00239"],  # sdhA
+            ["K13924"],  # dctA transporter
+        ],
     },
     "malate": {
         "name": "Malate utilization",
         "kos": [
             "K00024",  # mdh; malate dehydrogenase
-            "K00029",  # maeB; malate dehydrogenase (oxaloacetate-decarboxylating)(NADP+)
+            "K00029",  # maeB; malate dehydrogenase (NADP+)
             "K01571",  # mleA; malolactic enzyme
         ],
-        "essential_kos": ["K00024"],
+        "essential_ko_groups": [
+            ["K00024"],  # mdh
+            ["K00029"],  # maeB (alt)
+            ["K01571"],  # mleA (malolactic, LAB-specific)
+        ],
     },
 }
 
@@ -661,7 +736,11 @@ MINERAL_TRANSPORT_KOS = {
             "K01531",  # mgtA; Mg2+-importing ATPase
             "K06215",  # corA; Mg2+ transporter CorA
         ],
-        "essential_kos": ["K06213", "K06215"],
+        "essential_ko_groups": [
+            ["K06213"],  # mgtE
+            ["K01531"],  # mgtA (alt)
+            ["K06215"],  # corA (alt)
+        ],
     },
     "Mn": {
         "name": "Manganese transport",
@@ -669,8 +748,13 @@ MINERAL_TRANSPORT_KOS = {
             "K11707",  # mntH; Mn2+ transporter (NRAMP family)
             "K11709",  # mntA; Mn2+/Zn2+ ABC transporter substrate-binding
             "K11710",  # mntB; Mn2+/Zn2+ ABC transporter permease
+            "K11604",  # sitA; Mn2+/Fe2+ ABC transporter
         ],
-        "essential_kos": ["K11707", "K11709"],
+        "essential_ko_groups": [
+            ["K11707"],  # mntH
+            ["K11709"],  # mntA (alt)
+            ["K11604"],  # sitA (alt, also Fe)
+        ],
     },
     "Fe": {
         "name": "Iron transport",
@@ -678,9 +762,13 @@ MINERAL_TRANSPORT_KOS = {
             "K02010",  # feoB; Fe2+ transporter FeoB
             "K02012",  # feoA; Fe2+ transporter FeoA
             "K01992",  # afuA; Fe3+ ABC transporter substrate-binding
-            "K11604",  # sitA; Mn2+/Fe2+ ABC transporter substrate-binding
+            "K11604",  # sitA; Mn2+/Fe2+ ABC transporter
         ],
-        "essential_kos": ["K02010", "K01992"],
+        "essential_ko_groups": [
+            ["K02010"],  # feoB
+            ["K01992"],  # afuA (alt)
+            ["K11604"],  # sitA (alt)
+        ],
     },
     "K": {
         "name": "Potassium transport",
@@ -690,7 +778,11 @@ MINERAL_TRANSPORT_KOS = {
             "K03549",  # trkA; Trk K+ transport system
             "K06217",  # kup; K+ uptake protein (low affinity)
         ],
-        "essential_kos": ["K03455", "K03549"],
+        "essential_ko_groups": [
+            ["K03455"],  # kdpA
+            ["K03549"],  # trkA (alt)
+            ["K06217"],  # kup (alt)
+        ],
     },
     "Ca": {
         "name": "Calcium transport",
@@ -698,16 +790,21 @@ MINERAL_TRANSPORT_KOS = {
             "K01529",  # ATP2B; Ca2+-transporting ATPase
             "K07300",  # chaA; Ca2+/H+ antiporter
         ],
-        "essential_kos": ["K01529"],
+        "essential_ko_groups": [
+            ["K01529"],  # ATP2B
+            ["K07300"],  # chaA (alt)
+        ],
     },
     "Na": {
         "name": "Sodium transport/homeostasis",
         "kos": [
             "K03313",  # nhaA; Na+/H+ antiporter
             "K03315",  # nhaB; Na+/H+ antiporter NhaB
-            "K00001",  # nhaC; Na+/H+ antiporter NhaC
         ],
-        "essential_kos": ["K03313"],
+        "essential_ko_groups": [
+            ["K03313"],  # nhaA
+            ["K03315"],  # nhaB (alt)
+        ],
     },
 }
 
