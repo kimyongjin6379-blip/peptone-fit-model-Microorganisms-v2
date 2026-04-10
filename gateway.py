@@ -151,6 +151,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Global exception handler (logs + visible error in response) ───
+import traceback
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exc(request: Request, exc: Exception):
+    tb = traceback.format_exc()
+    logger.error(f"Unhandled error on {request.url.path}:\n{tb}")
+    debug = os.getenv("PEPTOMATCH_DEBUG", "1") == "1"
+    if debug:
+        body = (
+            f"<html><body style='font-family:monospace;background:#0b1020;color:#f87171;"
+            f"padding:20px;'><h2>500 on {request.url.path}</h2><pre>{tb}</pre></body></html>"
+        )
+        return HTMLResponse(body, status_code=500)
+    return JSONResponse(status_code=500, content={"error": str(exc)})
+
 # ── Templates + static ────────────────────────────────────────
 TEMPLATES_DIR = _HERE / "templates"
 STATIC_DIR = _HERE / "static"
