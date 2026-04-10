@@ -77,42 +77,65 @@ async def _wait_for_streamlit():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Startup: everything is wrapped in try/except so gateway NEVER fails to start.
+    Railway health check on /healthz must succeed immediately.
+    """
     global growth_db, streamlit_proc
 
-    # 1. Init DB (fast, no blocking)
-    growth_db = GrowthDB()
-    logger.info(f"Growth DB initialized: {growth_db.db_path}")
+    # 1. Init DB (fast, catch errors but don't block)
+    try:
+        growth_db = GrowthDB()
+        logger.info(f"Growth DB initialized: {growth_db.db_path}")
+    except Exception as e:
+        logger.error(f"GrowthDB init failed: {e}")
+        growth_db = None
 
-    # 2. Start Streamlit subprocess
-    streamlit_cmd = [
-        sys.executable, "-m", "streamlit", "run",
-        "app/streamlit_app.py",
-        "--server.port", str(STREAMLIT_PORT),
-        "--server.address", "127.0.0.1",
-        "--server.headless", "true",
-        "--browser.gatherUsageStats", "false",
-    ]
-    streamlit_proc = subprocess.Popen(
-        streamlit_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    logger.info(f"Streamlit subprocess started (PID {streamlit_proc.pid})")
+    # 2. Start Streamlit subprocess (non-critical for health check)
+    try:
+        streamlit_cmd = [
+            sys.executable, "-m", "streamlit", "run",
+            "app/streamlit_app.py",
+            "--server.port", str(STREAMLIT_PORT),
+            "--server.address", "127.0.0.1",
+            "--server.headless", "true",
+            "--browser.gatherUsageStats", "false",
+        ]
+        logger.info(f"Starting Streamlit: {' '.join(streamlit_cmd)}")
+        streamlit_proc = subprocess.Popen(
+            streamlit_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        logger.info(f"Streamlit subprocess started (PID {streamlit_proc.pid})")
+    except Exception as e:
+        logger.error(f"Streamlit subprocess failed to start: {e}")
+        streamlit_proc = None
 
-    # 3. Start background health-check (non-blocking!)
-    asyncio.create_task(_wait_for_streamlit())
+    # 3. Background health-check (non-blocking)
+    try:
+        asyncio.create_task(_wait_for_streamlit())
+    except Exception as e:
+        logger.error(f"Failed to start health check task: {e}")
 
-    # Gateway is immediately ready for Railway health checks
+    # Gateway is ready NOW for Railway health check
+    logger.info("Gateway lifespan startup complete")
     yield
 
+    # Cleanup
     if streamlit_proc:
-        streamlit_proc.terminate()
         try:
+            streamlit_proc.terminate()
             streamlit_proc.wait(timeout=5)
         except Exception:
-            streamlit_proc.kill()
+            try:
+                streamlit_proc.kill()
+            except Exception:
+                pass
     if growth_db:
-        growth_db.close()
+        try:
+            growth_db.close()
+        except Exception:
+            pass
 
 
 app = FastAPI(title="PeptoMatch Gateway", lifespan=lifespan)
@@ -129,13 +152,31 @@ app.add_middleware(
 
 @app.get("/healthz")
 async def healthz():
-    return JSONResponse({"status": "ok", "streamlit_ready": streamlit_ready})
+    """Always return 200 for Railway health check."""
+    return JSONResponse({
+        "status": "ok",
+        "streamlit_ready": streamlit_ready,
+        "db_ready": growth_db is not None,
+    })
+
+
+@app.get("/api/health")
+async def api_health():
+    return JSONResponse({"status": "ok"})
 
 
 # ── Growth Data API ────────────────────────────────────────────
 
+def _require_db():
+    if growth_db is None:
+        return JSONResponse(status_code=503, content={"error": "database not initialized"})
+    return None
+
+
 @app.post("/api/ingest")
 async def ingest_growth_data(payload: dict):
+    err = _require_db()
+    if err: return err
     try:
         result = growth_db.ingest(payload)
         logger.info(f"Ingest OK: {result}")
@@ -147,26 +188,36 @@ async def ingest_growth_data(payload: dict):
 
 @app.get("/api/growth/summary")
 async def growth_summary():
+    err = _require_db()
+    if err: return err
     return JSONResponse(content=growth_db.get_summary())
 
 
 @app.get("/api/growth/experiments")
 async def list_experiments(media_type: str = None):
+    err = _require_db()
+    if err: return err
     return JSONResponse(content=growth_db.get_experiments(media_type))
 
 
 @app.get("/api/growth/curves")
 async def list_curves(experiment_id: int = None):
+    err = _require_db()
+    if err: return err
     return JSONResponse(content=growth_db.get_curves_with_metrics(experiment_id))
 
 
 @app.get("/api/growth/ml-data")
 async def ml_training_data():
+    err = _require_db()
+    if err: return err
     return JSONResponse(content=growth_db.get_ml_training_data())
 
 
 @app.get("/api/growth/fba-data")
 async def fba_validation_data():
+    err = _require_db()
+    if err: return err
     return JSONResponse(content=growth_db.get_fba_validation_data())
 
 
