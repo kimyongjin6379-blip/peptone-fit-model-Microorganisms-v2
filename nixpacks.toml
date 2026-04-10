@@ -1,8 +1,9 @@
 # Railway uses Nixpacks for auto-build
 # HMMER: KofamScan HMM search engine
 # Ruby: KofamScan exec_annotation script
+# Python: must be explicit when overriding phases.setup
 [phases.setup]
-nixPkgs = ["hmmer", "ruby", "wget", "gzip"]
+nixPkgs = ["python311", "python311Packages.pip", "gcc", "hmmer", "ruby", "wget", "gzip"]
 
 [phases.install]
 cmds = [
