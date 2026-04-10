@@ -26,10 +26,17 @@ logger = logging.getLogger("peptomatch.gateway")
 logging.basicConfig(level=logging.INFO)
 
 # Import GrowthDB (handles both installed package and source paths)
+# Add src/ to sys.path as a fallback in case `pip install -e .` didn't run
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SRC = os.path.join(_HERE, "src")
+if os.path.isdir(_SRC) and _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+
 try:
     from peptomatch.growth_db import GrowthDB
-except ImportError:
-    from src.peptomatch.growth_db import GrowthDB
+except ImportError as e:
+    logging.error(f"Failed to import GrowthDB: {e}")
+    raise
 
 STREAMLIT_PORT = int(os.getenv("STREAMLIT_INTERNAL_PORT", "8501"))
 STREAMLIT_URL = f"http://127.0.0.1:{STREAMLIT_PORT}"

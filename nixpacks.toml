@@ -6,7 +6,8 @@ nixPkgs = ["hmmer", "ruby", "wget", "gzip"]
 
 [phases.install]
 cmds = [
-    "pip install -r requirements.txt && pip install -e .",
+    "pip install -r requirements.txt",
+    "pip install -e . || echo 'editable install skipped'",
     "chmod +x scripts/setup_kofamscan.sh start.sh",
 ]
 

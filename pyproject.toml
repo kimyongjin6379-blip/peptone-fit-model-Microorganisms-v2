@@ -22,3 +22,9 @@ dependencies = [
 
 [project.scripts]
 peptomatch = "peptomatch.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
