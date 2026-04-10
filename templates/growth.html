@@ -35,7 +35,15 @@
 </div>
 
 <div class="glass p-6 mb-5">
-    <h2 class="text-lg font-semibold mb-3">실험 목록</h2>
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold">실험 목록</h2>
+        {% if experiments %}
+        <button id="reset-btn" class="text-xs px-3 py-1.5 rounded-lg"
+                style="background: rgba(239, 68, 68, 0.18); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.35);">
+            ⚠️ 전체 리셋
+        </button>
+        {% endif %}
+    </div>
     {% if experiments %}
     <div class="overflow-x-auto">
         <table>
@@ -68,11 +76,19 @@
                     <td style="color: var(--text-dim);">{{ e.source_filename or '-' }}</td>
                     <td style="color: var(--text-dim); font-size: 12px;">{{ e.processed_at or '-' }}</td>
                     <td>
-                        <button class="text-xs px-3 py-1 rounded-lg view-btn"
-                                style="background: rgba(99, 102, 241, 0.18); color: #c7d2fe;"
-                                data-id="{{ e.id }}">
-                            곡선 보기
-                        </button>
+                        <div class="flex gap-2">
+                            <button class="text-xs px-3 py-1 rounded-lg view-btn"
+                                    style="background: rgba(99, 102, 241, 0.18); color: #c7d2fe;"
+                                    data-id="{{ e.id }}">
+                                곡선 보기
+                            </button>
+                            <button class="text-xs px-3 py-1 rounded-lg delete-btn"
+                                    style="background: rgba(239, 68, 68, 0.15); color: #fca5a5;"
+                                    data-id="{{ e.id }}"
+                                    data-label="#{{ e.id }} · {{ e.strain_name or '' }} · {{ e.source_filename or '' }}">
+                                🗑 삭제
+                            </button>
+                        </div>
                     </td>
                 </tr>
             {% endfor %}
@@ -124,6 +140,65 @@ document.querySelectorAll('.view-btn').forEach(btn => {
         }
     });
 });
+
+// ── Delete single experiment ──
+document.querySelectorAll('.delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const expId = btn.dataset.id;
+        const label = btn.dataset.label;
+        if (!confirm(`실험을 삭제할까요?\n${label}\n\n연관된 성장 곡선과 지표도 모두 삭제됩니다. 되돌릴 수 없습니다.`)) {
+            return;
+        }
+        btn.disabled = true;
+        btn.textContent = '삭제 중...';
+        try {
+            const resp = await fetch(`/api/growth/experiments/${expId}`, {method: 'DELETE'});
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.detail || 'delete failed');
+            // Remove row from table; reload if no rows left
+            const tr = btn.closest('tr');
+            if (tr) tr.remove();
+            // Hide curve panel if it was showing this experiment
+            const panel = document.getElementById('curve-panel');
+            if (panel && document.getElementById('curve-exp-label').textContent.includes(`#${expId} `)) {
+                panel.classList.add('hidden');
+            }
+            // If no rows left, reload page to show empty-state message
+            if (document.querySelectorAll('tbody tr').length === 0) {
+                location.reload();
+            }
+        } catch (err) {
+            alert('삭제 실패: ' + err.message);
+            btn.disabled = false;
+            btn.textContent = '🗑 삭제';
+        }
+    });
+});
+
+// ── Reset all ──
+const resetBtn = document.getElementById('reset-btn');
+if (resetBtn) {
+    resetBtn.addEventListener('click', async () => {
+        const phrase = prompt('⚠️ 모든 성장 데이터를 삭제합니다. 되돌릴 수 없습니다.\n\n계속하려면 "RESET" 을 입력하세요:');
+        if (phrase !== 'RESET') {
+            if (phrase !== null) alert('확인 문구가 일치하지 않아 취소되었습니다.');
+            return;
+        }
+        resetBtn.disabled = true;
+        resetBtn.textContent = '삭제 중...';
+        try {
+            const resp = await fetch('/api/growth/reset?confirm=yes', {method: 'DELETE'});
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.detail || 'reset failed');
+            alert(`리셋 완료: 실험 ${data.experiments}, 곡선 ${data.curves}, 지표 ${data.metrics} 삭제됨`);
+            location.reload();
+        } catch (err) {
+            alert('리셋 실패: ' + err.message);
+            resetBtn.disabled = false;
+            resetBtn.textContent = '⚠️ 전체 리셋';
+        }
+    });
+}
 
 function renderCurves(expId, curves) {
     const panel = document.getElementById('curve-panel');

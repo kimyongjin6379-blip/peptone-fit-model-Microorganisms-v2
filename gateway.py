@@ -405,3 +405,39 @@ async def fba_validation_data():
     if err:
         return err
     return JSONResponse(content=growth_db.get_fba_validation_data())
+
+
+@app.delete("/api/growth/experiments/{experiment_id}")
+async def delete_experiment(experiment_id: int):
+    """Delete a single experiment and all related curves/metrics."""
+    err = _require_db()
+    if err:
+        return err
+    try:
+        result = growth_db.delete_experiment(experiment_id)
+        if result["experiments"] == 0:
+            return JSONResponse(
+                status_code=404,
+                content={"status": "not_found", "experiment_id": experiment_id},
+            )
+        return JSONResponse({"status": "ok", **result})
+    except Exception as e:
+        logger.error(f"delete_experiment failed: {e}")
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
+
+
+@app.delete("/api/growth/reset")
+async def reset_all_growth(confirm: str = ""):
+    """⚠️ Delete ALL experiments, curves, and metrics. Irreversible.
+
+    Requires query param confirm=yes to actually execute.
+    """
+    err = _require_db()
+    if err:
+        return err
+    if confirm != "yes":
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "detail": "confirm=yes required"},
+        )
+    return JSONResponse({"status": "ok", **growth_db.reset_all()})

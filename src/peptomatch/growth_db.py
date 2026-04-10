@@ -437,6 +437,67 @@ class GrowthDB:
         cur = self.conn.execute("SELECT COUNT(*) FROM growth_curves")
         return cur.fetchone()[0]
 
+    # ── Deletion ────────────────────────────────────────────────
+
+    def delete_experiment(self, experiment_id: int) -> dict:
+        """Delete one experiment and all its curves/metrics.
+
+        Returns counts of deleted rows: {"experiments", "curves", "metrics"}.
+        """
+        # Collect curve ids first so we can delete their metrics.
+        cur = self.conn.execute(
+            "SELECT id FROM growth_curves WHERE experiment_id = ?",
+            (experiment_id,),
+        )
+        curve_ids = [r[0] for r in cur.fetchall()]
+
+        n_metrics = 0
+        if curve_ids:
+            placeholders = ",".join("?" * len(curve_ids))
+            n_metrics = self.conn.execute(
+                f"DELETE FROM growth_metrics WHERE growth_curve_id IN ({placeholders})",
+                curve_ids,
+            ).rowcount
+
+        n_curves = self.conn.execute(
+            "DELETE FROM growth_curves WHERE experiment_id = ?",
+            (experiment_id,),
+        ).rowcount
+
+        n_exp = self.conn.execute(
+            "DELETE FROM experiments WHERE id = ?",
+            (experiment_id,),
+        ).rowcount
+
+        self.conn.commit()
+        logger.info(
+            f"Deleted experiment {experiment_id}: {n_exp} exp, {n_curves} curves, {n_metrics} metrics"
+        )
+        return {
+            "experiments": int(n_exp),
+            "curves":      int(n_curves),
+            "metrics":     int(n_metrics),
+        }
+
+    def reset_all(self) -> dict:
+        """Truncate all growth data tables. Alias tables are preserved."""
+        n_metrics = self.conn.execute("DELETE FROM growth_metrics").rowcount
+        n_curves  = self.conn.execute("DELETE FROM growth_curves").rowcount
+        n_exp     = self.conn.execute("DELETE FROM experiments").rowcount
+        # Reset autoincrement counters
+        self.conn.execute(
+            "DELETE FROM sqlite_sequence WHERE name IN ('experiments','growth_curves','growth_metrics')"
+        )
+        self.conn.commit()
+        logger.warning(
+            f"RESET ALL growth data: {n_exp} exp, {n_curves} curves, {n_metrics} metrics"
+        )
+        return {
+            "experiments": int(n_exp),
+            "curves":      int(n_curves),
+            "metrics":     int(n_metrics),
+        }
+
     def get_summary(self) -> dict:
         """DB summary stats."""
         return {
