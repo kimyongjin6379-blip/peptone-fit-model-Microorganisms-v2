@@ -1,12 +1,13 @@
 """
-PeptoMatch API Gateway
+PeptoMatch API Gateway (Railway-compatible)
 
 FastAPI gateway that:
-1. Handles /api/ingest for growth data ingestion from growth-curve-app
-2. Reverse-proxies all other requests to Streamlit (running internally)
+1. Handles /api/* endpoints for growth data ingestion
+2. Reverse-proxies all other requests to Streamlit (internal subprocess)
+3. Proxies WebSocket for Streamlit's real-time updates
 
-Railway exposes one port -> this gateway serves on $PORT,
-Streamlit runs on an internal port (8501).
+Key: Returns 200 loading page (not 503) while Streamlit boots,
+so Railway health checks pass immediately.
 """
 
 import asyncio
@@ -14,69 +15,95 @@ import logging
 import os
 import subprocess
 import sys
-import time
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
+logger = logging.getLogger("peptomatch.gateway")
+logging.basicConfig(level=logging.INFO)
+
+# Import GrowthDB (handles both installed package and source paths)
 try:
     from peptomatch.growth_db import GrowthDB
 except ImportError:
     from src.peptomatch.growth_db import GrowthDB
 
-logger = logging.getLogger("peptomatch.gateway")
-logging.basicConfig(level=logging.INFO)
+STREAMLIT_PORT = int(os.getenv("STREAMLIT_INTERNAL_PORT", "8501"))
+STREAMLIT_URL = f"http://127.0.0.1:{STREAMLIT_PORT}"
 
-STREAMLIT_INTERNAL_PORT = 8501
-STREAMLIT_BASE = f"http://127.0.0.1:{STREAMLIT_INTERNAL_PORT}"
-
-# Global DB instance
 growth_db: GrowthDB = None
 streamlit_proc: subprocess.Popen = None
+streamlit_ready = False
+
+LOADING_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>PeptoMatch</title>
+<meta http-equiv="refresh" content="3">
+<style>body{display:flex;justify-content:center;align-items:center;height:100vh;
+font-family:sans-serif;background:#f0f2f6;color:#333;}
+.box{text-align:center;}.spinner{width:40px;height:40px;border:4px solid #ddd;
+border-top:4px solid #D32F2F;border-radius:50%;animation:spin 1s linear infinite;
+margin:0 auto 16px;}@keyframes spin{to{transform:rotate(360deg);}}</style>
+</head><body><div class="box"><div class="spinner"></div>
+<h2>PeptoMatch Loading...</h2><p>Streamlit is starting up. This page will auto-refresh.</p>
+</div></body></html>"""
+
+
+async def _wait_for_streamlit():
+    """Background task: poll Streamlit health until ready."""
+    global streamlit_ready
+    for _ in range(120):
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(f"{STREAMLIT_URL}/_stcore/health", timeout=3)
+                if r.status_code == 200:
+                    streamlit_ready = True
+                    logger.info("Streamlit is ready!")
+                    return
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+    logger.error("Streamlit did not become ready within timeout")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start Streamlit as subprocess on app startup, stop on shutdown."""
     global growth_db, streamlit_proc
 
-    # Initialize Growth DB
+    # 1. Init DB (fast, no blocking)
     growth_db = GrowthDB()
     logger.info(f"Growth DB initialized: {growth_db.db_path}")
 
-    # Start Streamlit as subprocess
+    # 2. Start Streamlit subprocess
     streamlit_cmd = [
         sys.executable, "-m", "streamlit", "run",
         "app/streamlit_app.py",
-        "--server.port", str(STREAMLIT_INTERNAL_PORT),
+        "--server.port", str(STREAMLIT_PORT),
         "--server.address", "127.0.0.1",
         "--server.headless", "true",
         "--browser.gatherUsageStats", "false",
     ]
-    streamlit_proc = subprocess.Popen(streamlit_cmd)
-    logger.info(f"Streamlit started (PID: {streamlit_proc.pid}) on port {STREAMLIT_INTERNAL_PORT}")
+    streamlit_proc = subprocess.Popen(
+        streamlit_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    logger.info(f"Streamlit subprocess started (PID {streamlit_proc.pid})")
 
-    # Wait for Streamlit to be ready
-    for _ in range(30):
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(f"{STREAMLIT_BASE}/_stcore/health")
-                if resp.status_code == 200:
-                    logger.info("Streamlit is ready")
-                    break
-        except Exception:
-            pass
-        await asyncio.sleep(1)
+    # 3. Start background health-check (non-blocking!)
+    asyncio.create_task(_wait_for_streamlit())
 
+    # Gateway is immediately ready for Railway health checks
     yield
 
-    # Cleanup
     if streamlit_proc:
         streamlit_proc.terminate()
-        streamlit_proc.wait(timeout=5)
+        try:
+            streamlit_proc.wait(timeout=5)
+        except Exception:
+            streamlit_proc.kill()
     if growth_db:
         growth_db.close()
 
@@ -91,152 +118,140 @@ app.add_middleware(
 )
 
 
-# ── API Endpoints ───────────────────────────────────────────────
+# ── Health check (always 200) ──────────────────────────────────
+
+@app.get("/healthz")
+async def healthz():
+    return JSONResponse({"status": "ok", "streamlit_ready": streamlit_ready})
+
+
+# ── Growth Data API ────────────────────────────────────────────
 
 @app.post("/api/ingest")
 async def ingest_growth_data(payload: dict):
-    """Receive growth data from growth-curve-app and store in SQLite."""
     try:
         result = growth_db.ingest(payload)
-        logger.info(f"Ingest success: {result}")
-        return JSONResponse(content={"status": "ok", **result})
+        logger.info(f"Ingest OK: {result}")
+        return JSONResponse({"status": "ok", **result})
     except Exception as e:
-        logger.error(f"Ingest failed: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "detail": str(e)},
-        )
+        logger.error(f"Ingest error: {e}")
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
 
 @app.get("/api/growth/summary")
 async def growth_summary():
-    """Return DB summary stats."""
     return JSONResponse(content=growth_db.get_summary())
 
 
 @app.get("/api/growth/experiments")
 async def list_experiments(media_type: str = None):
-    """List experiments."""
     return JSONResponse(content=growth_db.get_experiments(media_type))
 
 
 @app.get("/api/growth/curves")
 async def list_curves(experiment_id: int = None):
-    """List growth curves with metrics."""
     return JSONResponse(content=growth_db.get_curves_with_metrics(experiment_id))
 
 
 @app.get("/api/growth/ml-data")
 async def ml_training_data():
-    """Get ML training data (peptone screening experiments)."""
     return JSONResponse(content=growth_db.get_ml_training_data())
 
 
 @app.get("/api/growth/fba-data")
 async def fba_validation_data():
-    """Get FBA validation data (media optimization experiments)."""
     return JSONResponse(content=growth_db.get_fba_validation_data())
 
 
-# ── Reverse Proxy to Streamlit ──────────────────────────────────
+# ── Streamlit Reverse Proxy ────────────────────────────────────
+
+@app.get("/")
+async def root(request: Request):
+    return await _proxy_http(request, "")
+
 
 @app.api_route(
     "/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
 )
-async def proxy_to_streamlit(request: Request, path: str = ""):
-    """Proxy all non-API requests to Streamlit."""
-    target_url = f"{STREAMLIT_BASE}/{path}"
+async def proxy_catchall(request: Request, path: str = ""):
+    return await _proxy_http(request, path)
 
-    # Forward query params
+
+async def _proxy_http(request: Request, path: str) -> Response:
+    """Forward HTTP request to Streamlit, or show loading page."""
+    if not streamlit_ready:
+        return HTMLResponse(LOADING_HTML, status_code=200)
+
+    url = f"{STREAMLIT_URL}/{path}"
     if request.url.query:
-        target_url += f"?{request.url.query}"
+        url += f"?{request.url.query}"
 
     try:
         body = await request.body()
-        headers = dict(request.headers)
-        # Remove host header to avoid confusion
-        headers.pop("host", None)
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.request(
-                method=request.method,
-                url=target_url,
-                headers=headers,
-                content=body,
+                method=request.method, url=url,
+                headers=headers, content=body,
             )
 
-        # Forward response
-        excluded_headers = {"content-encoding", "transfer-encoding", "content-length"}
-        response_headers = {
-            k: v for k, v in resp.headers.items()
-            if k.lower() not in excluded_headers
-        }
+        skip = {"content-encoding", "transfer-encoding", "content-length"}
+        resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in skip}
+        return Response(content=resp.content, status_code=resp.status_code, headers=resp_headers)
 
-        return Response(
-            content=resp.content,
-            status_code=resp.status_code,
-            headers=response_headers,
-        )
     except httpx.ConnectError:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "Streamlit is starting up, please wait..."},
-        )
+        return HTMLResponse(LOADING_HTML, status_code=200)
     except Exception as e:
-        logger.error(f"Proxy error: {e}")
-        return JSONResponse(
-            status_code=502,
-            content={"detail": f"Proxy error: {str(e)}"},
-        )
+        logger.error(f"Proxy error [{path}]: {e}")
+        return HTMLResponse(f"<h3>Proxy Error</h3><p>{e}</p>", status_code=502)
 
 
-# Root path (Streamlit index)
-@app.get("/")
-async def proxy_root(request: Request):
-    """Proxy root to Streamlit."""
-    return await proxy_to_streamlit(request, path="")
-
-
-# ── WebSocket Proxy for Streamlit ───────────────────────────────
+# ── WebSocket Proxy ────────────────────────────────────────────
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
-import websockets
-
 
 @app.websocket("/_stcore/stream")
-async def websocket_proxy(ws: WebSocket):
-    """Proxy WebSocket connections to Streamlit's _stcore/stream endpoint."""
-    await ws.accept()
-    target_ws_url = f"ws://127.0.0.1:{STREAMLIT_INTERNAL_PORT}/_stcore/stream"
+async def ws_proxy(client_ws: WebSocket):
+    """Proxy Streamlit WebSocket connection."""
+    await client_ws.accept()
+
+    import websockets
+    target = f"ws://127.0.0.1:{STREAMLIT_PORT}/_stcore/stream"
 
     try:
-        async with websockets.connect(target_ws_url) as target_ws:
-
-            async def client_to_server():
+        async with websockets.connect(target) as server_ws:
+            async def forward_client():
                 try:
                     while True:
-                        data = await ws.receive_text()
-                        await target_ws.send(data)
-                except WebSocketDisconnect:
+                        msg = await client_ws.receive_text()
+                        await server_ws.send(msg)
+                except (WebSocketDisconnect, Exception):
                     pass
 
-            async def server_to_client():
+            async def forward_server():
                 try:
-                    async for message in target_ws:
-                        if isinstance(message, str):
-                            await ws.send_text(message)
+                    async for msg in server_ws:
+                        if isinstance(msg, str):
+                            await client_ws.send_text(msg)
                         else:
-                            await ws.send_bytes(message)
+                            await client_ws.send_bytes(msg)
                 except Exception:
                     pass
 
-            await asyncio.gather(client_to_server(), server_to_client())
+            done, pending = await asyncio.wait(
+                [asyncio.create_task(forward_client()),
+                 asyncio.create_task(forward_server())],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
 
     except Exception as e:
-        logger.error(f"WebSocket proxy error: {e}")
+        logger.warning(f"WS proxy error: {e}")
     finally:
         try:
-            await ws.close()
+            await client_ws.close()
         except Exception:
             pass
