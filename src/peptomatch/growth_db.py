@@ -221,8 +221,14 @@ class GrowthDB:
             mean_values = series.get("mean", [])
             sd_values = series.get("sd", [])
 
-            # Extract group code (e.g., "SM1" from "SM1" or "SM1 - SOY-1")
-            group_code = group_name.split(" ")[0].split("-")[0] if group_name else ""
+            # Prefer explicit group_code from growth-curve-app's extract_chart_data().
+            # The `name` field is a display label like "SOY-1 (SM1)" and can't be
+            # reliably reverse-parsed. Fall back to parsing only if group_code
+            # is absent (older payloads).
+            group_code = series.get("group_code") or ""
+            if not group_code and group_name:
+                # Legacy fallback: best-effort parse from name
+                group_code = group_name.split(" ")[0].split("-")[0]
 
             # Look up sample info
             sample_info = sample_lookup.get(group_code, {})
