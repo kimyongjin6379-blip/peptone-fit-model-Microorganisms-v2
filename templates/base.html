@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}PeptoMatch{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base:    #0b1020;
+            --bg-panel:   rgba(22, 27, 46, 0.72);
+            --bg-elev:    rgba(32, 38, 62, 0.8);
+            --border:     rgba(148, 163, 184, 0.16);
+            --text:       #e2e8f0;
+            --text-dim:   #94a3b8;
+            --accent:     #D32F2F;
+            --accent-2:   #6366f1;
+        }
+        html, body {
+            background:
+                radial-gradient(1200px 800px at 10% -10%, rgba(99, 102, 241, 0.18), transparent 60%),
+                radial-gradient(900px 700px at 100% 0%, rgba(211, 47, 47, 0.12), transparent 55%),
+                var(--bg-base);
+            color: var(--text);
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+        }
+        .glass {
+            background: var(--bg-panel);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+        }
+        .glass-elev {
+            background: var(--bg-elev);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #D32F2F, #b91c1c);
+            color: white;
+            font-weight: 600;
+            transition: transform .12s ease, box-shadow .2s ease;
+        }
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 28px rgba(211, 47, 47, 0.32);
+        }
+        .btn-primary:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .nav-link {
+            color: var(--text-dim);
+            transition: color .15s ease, background .15s ease;
+            border-radius: 10px;
+        }
+        .nav-link:hover { color: var(--text); background: rgba(148, 163, 184, 0.08); }
+        .nav-link.active { color: var(--text); background: rgba(99, 102, 241, 0.18); }
+        .form-input, .form-select {
+            width: 100%;
+            background: rgba(15, 18, 32, 0.6);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 10px;
+            padding: 10px 12px;
+            outline: none;
+            transition: border .15s ease, background .15s ease;
+        }
+        .form-select {
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml;utf8,<svg fill='%2394a3b8' xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M7 10l5 5 5-5z'/></svg>");
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+            padding-right: 36px;
+        }
+        .form-select option { background: #0f1320; color: var(--text); }
+        .form-input:focus, .form-select:focus {
+            border-color: var(--accent-2);
+            background: rgba(15, 18, 32, 0.85);
+        }
+        .metric-card {
+            background: rgba(15, 18, 32, 0.45);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 18px;
+        }
+        table { width: 100%; border-collapse: collapse; }
+        th, td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            font-size: 14px;
+        }
+        th { color: var(--text-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: 12px; }
+        tr:hover td { background: rgba(99, 102, 241, 0.06); }
+        .badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .badge-ok   { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
+        .badge-warn { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+        .badge-err  { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+        .spinner {
+            width: 20px; height: 20px;
+            border: 3px solid rgba(255, 255, 255, 0.18);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+    {% block head_extra %}{% endblock %}
+</head>
+<body>
+<div class="max-w-7xl mx-auto px-5 py-6">
+
+    <header class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl flex items-center justify-center"
+                 style="background: linear-gradient(135deg, #D32F2F, #6366f1);">
+                <span class="text-lg">🧬</span>
+            </div>
+            <div>
+                <div class="text-xl font-bold tracking-tight">PeptoMatch</div>
+                <div class="text-xs" style="color: var(--text-dim);">Genome-driven Peptone Recommendation</div>
+            </div>
+        </div>
+        <nav class="flex items-center gap-1">
+            <a href="/"          class="nav-link px-3 py-2 text-sm {% if active == 'home' %}active{% endif %}">대시보드</a>
+            <a href="/recommend" class="nav-link px-3 py-2 text-sm {% if active == 'recommend' %}active{% endif %}">펩톤 추천</a>
+            <a href="/growth"    class="nav-link px-3 py-2 text-sm {% if active == 'growth' %}active{% endif %}">성장 데이터</a>
+            <a href="/healthz"   class="nav-link px-3 py-2 text-sm" target="_blank">Health</a>
+        </nav>
+    </header>
+
+    {% if not backend_ok %}
+    <div class="glass p-4 mb-5" style="border-color: rgba(245, 158, 11, 0.4);">
+        <div class="flex items-start gap-3">
+            <span class="text-xl">⚠️</span>
+            <div class="text-sm">
+                <div class="font-semibold text-amber-300">Backend 초기화 실패</div>
+                <div style="color: var(--text-dim);">
+                    균주 DB 또는 펩톤 조성 데이터 로딩에 문제가 있습니다.
+                    Growth API는 정상 동작 중이나, 추천 기능은 사용할 수 없습니다.
+                    로그를 확인해주세요.
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="mt-10 pt-6 border-t text-center text-xs" style="border-color: var(--border); color: var(--text-dim);">
+        PeptoMatch · FastAPI + Tailwind · 신사업1팀
+    </footer>
+</div>
+{% block body_extra %}{% endblock %}
+</body>
+</html>

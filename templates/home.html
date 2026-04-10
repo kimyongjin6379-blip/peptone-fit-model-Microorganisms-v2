@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% set active = 'home' %}
+{% block title %}PeptoMatch · 대시보드{% endblock %}
+
+{% block content %}
+<div class="glass p-7 mb-6">
+    <h1 class="text-2xl font-bold mb-1">환영합니다 👋</h1>
+    <p class="text-sm" style="color: var(--text-dim);">
+        유전체 기반 펩톤 추천 시스템. 균주와 배지를 선택하면 Sempio 펩톤 후보 중 최적 매칭을 추천합니다.
+    </p>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+    <div class="metric-card">
+        <div class="text-xs" style="color: var(--text-dim);">등록 균주</div>
+        <div class="text-3xl font-bold mt-1">{{ strain_count }}</div>
+    </div>
+    <div class="metric-card">
+        <div class="text-xs" style="color: var(--text-dim);">펩톤 샘플</div>
+        <div class="text-3xl font-bold mt-1">{{ peptone_count }}</div>
+    </div>
+    <div class="metric-card">
+        <div class="text-xs" style="color: var(--text-dim);">누적 실험</div>
+        <div class="text-3xl font-bold mt-1">{{ summary.get('total_experiments', 0) }}</div>
+    </div>
+    <div class="metric-card">
+        <div class="text-xs" style="color: var(--text-dim);">성장 곡선</div>
+        <div class="text-3xl font-bold mt-1">{{ summary.get('total_curves', 0) }}</div>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+    <div class="glass p-6">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-lg font-semibold">🎯 펩톤 추천</h2>
+            <a href="/recommend" class="text-xs px-3 py-1 rounded-lg"
+               style="background: rgba(99, 102, 241, 0.2); color: #c7d2fe;">바로가기 →</a>
+        </div>
+        <p class="text-sm" style="color: var(--text-dim);">
+            균주를 선택하고 배지 유형을 고르면 유전체 기반 스코어로 Top-K 펩톤을 추천합니다.
+            추천 이유와 배지별 책임 가중치도 함께 표시합니다.
+        </p>
+    </div>
+
+    <div class="glass p-6">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-lg font-semibold">📊 성장 데이터</h2>
+            <a href="/growth" class="text-xs px-3 py-1 rounded-lg"
+               style="background: rgba(99, 102, 241, 0.2); color: #c7d2fe;">바로가기 →</a>
+        </div>
+        <p class="text-sm" style="color: var(--text-dim);">
+            growth-curve-app에서 처리된 실험 데이터가 자동으로 적재됩니다.
+            팀 약어(LR, SOY-N+ 등)를 기준으로 균주·펩톤이 자동 매칭됩니다.
+        </p>
+    </div>
+
+    <div class="glass p-6 lg:col-span-2">
+        <h2 class="text-lg font-semibold mb-3">🔗 시스템 상태</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            <div class="glass-elev p-3 flex items-center justify-between">
+                <span>Growth DB</span>
+                <span class="badge {% if growth_ok %}badge-ok{% else %}badge-err{% endif %}">
+                    {% if growth_ok %}READY{% else %}DOWN{% endif %}
+                </span>
+            </div>
+            <div class="glass-elev p-3 flex items-center justify-between">
+                <span>Strain DB</span>
+                <span class="badge {% if backend_ok %}badge-ok{% else %}badge-warn{% endif %}">
+                    {% if backend_ok %}READY{% else %}INIT{% endif %}
+                </span>
+            </div>
+            <div class="glass-elev p-3 flex items-center justify-between">
+                <span>Composition</span>
+                <span class="badge {% if backend_ok %}badge-ok{% else %}badge-warn{% endif %}">
+                    {% if backend_ok %}LOADED{% else %}INIT{% endif %}
+                </span>
+            </div>
+            <div class="glass-elev p-3 flex items-center justify-between">
+                <span>API Gateway</span>
+                <span class="badge badge-ok">ACTIVE</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% set active = 'recommend' %}
+{% block title %}PeptoMatch · 펩톤 추천{% endblock %}
+
+{% block content %}
+<div class="glass p-6 mb-5">
+    <h1 class="text-xl font-bold mb-4">🎯 펩톤 추천</h1>
+
+    <form id="recommend-form" class="grid grid-cols-1 md:grid-cols-12 gap-4">
+        <div class="md:col-span-5">
+            <label class="block text-xs mb-1" style="color: var(--text-dim);">균주</label>
+            <select name="strain_id" id="strain_id" class="form-select" required>
+                {% for s in strains %}
+                <option value="{{ s.id }}">{{ s.id }} · {{ s.name }}</option>
+                {% else %}
+                <option value="">(등록된 균주 없음)</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="md:col-span-4">
+            <label class="block text-xs mb-1" style="color: var(--text-dim);">배지 유형</label>
+            <select name="media_key" id="media_key" class="form-select">
+                <option value="">자동 선택 (genus 기반)</option>
+                {% for m in media_options %}
+                <option value="{{ m.key }}">{{ m.label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="md:col-span-1">
+            <label class="block text-xs mb-1" style="color: var(--text-dim);">Top-K</label>
+            <input type="number" name="top_k" id="top_k" class="form-input" value="10" min="3" max="20">
+        </div>
+
+        <div class="md:col-span-2 flex items-end">
+            <label class="flex items-center gap-2 text-sm w-full py-2">
+                <input type="checkbox" name="sempio_only" id="sempio_only" class="accent-indigo-500" checked>
+                Sempio 소재만
+            </label>
+        </div>
+
+        <div class="md:col-span-12 flex justify-end">
+            <button type="submit" id="submit-btn" class="btn-primary px-6 py-2.5 rounded-xl text-sm">
+                🔬 분석 시작
+            </button>
+        </div>
+    </form>
+</div>
+
+<div id="status" class="hidden glass p-4 mb-5">
+    <div class="flex items-center gap-3 text-sm">
+        <div class="spinner"></div>
+        <span>유전체 기반 분석 중...</span>
+    </div>
+</div>
+
+<div id="error-box" class="hidden glass p-4 mb-5" style="border-color: rgba(239, 68, 68, 0.45);">
+    <div class="text-sm text-red-300" id="error-text"></div>
+</div>
+
+<div id="results" class="hidden space-y-5">
+    <div class="glass p-6">
+        <h2 class="text-lg font-semibold mb-3">균주 영양 프로파일</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3" id="summary-cards"></div>
+        <div class="mt-4 space-y-2 text-sm" id="summary-notes"></div>
+    </div>
+
+    <div class="glass p-6">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-lg font-semibold">Top 펩톤 추천</h2>
+            <span class="text-xs" style="color: var(--text-dim);" id="media-info"></span>
+        </div>
+        <div id="chart" style="width:100%; height: 380px;"></div>
+    </div>
+
+    <div class="glass p-6">
+        <h2 class="text-lg font-semibold mb-3">추천 상세</h2>
+        <div class="overflow-x-auto">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 60px;">순위</th>
+                        <th>펩톤</th>
+                        <th style="width: 100px;">점수</th>
+                        <th>추천 이유</th>
+                    </tr>
+                </thead>
+                <tbody id="result-tbody"></tbody>
+            </table>
+        </div>
+        <div class="mt-4 flex justify-end">
+            <button id="csv-btn" class="text-xs px-3 py-2 rounded-lg"
+                    style="background: rgba(99, 102, 241, 0.18); color: #c7d2fe;">
+                📥 CSV 다운로드
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+const form    = document.getElementById('recommend-form');
+const statusEl= document.getElementById('status');
+const errBox  = document.getElementById('error-box');
+const errText = document.getElementById('error-text');
+const results = document.getElementById('results');
+const btn     = document.getElementById('submit-btn');
+
+let lastResult = null;
+
+form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errBox.classList.add('hidden');
+    results.classList.add('hidden');
+    statusEl.classList.remove('hidden');
+    btn.disabled = true;
+
+    const payload = {
+        strain_id:   parseInt(form.strain_id.value, 10),
+        media_key:   form.media_key.value || null,
+        top_k:       parseInt(form.top_k.value, 10),
+        sempio_only: form.sempio_only.checked,
+        language:    'ko',
+    };
+
+    try {
+        const resp = await fetch('/api/recommend', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'request failed');
+        lastResult = data;
+        render(data);
+    } catch (err) {
+        errText.textContent = '오류: ' + err.message;
+        errBox.classList.remove('hidden');
+    } finally {
+        statusEl.classList.add('hidden');
+        btn.disabled = false;
+    }
+});
+
+function card(label, value) {
+    return `<div class="metric-card">
+        <div class="text-xs" style="color: var(--text-dim);">${label}</div>
+        <div class="text-base font-semibold mt-1">${value || '-'}</div>
+    </div>`;
+}
+
+function render(data) {
+    const s = data.summary || {};
+    document.getElementById('summary-cards').innerHTML = [
+        card('균주', s.name),
+        card('정보 출처', s.prior_source),
+        card('수송체 활성', s.transporter_level),
+        card('뉴클레오타이드 합성', s.nucleotide_synthesis),
+    ].join('');
+
+    const notes = [];
+    if (s.key_aa_deficiencies && s.key_aa_deficiencies.length) {
+        notes.push(`<div class="glass-elev p-3"><span class="font-semibold text-indigo-300">주요 아미노산 결핍:</span> ${s.key_aa_deficiencies.join(', ')}</div>`);
+    }
+    if (s.vitamin_deficiencies && s.vitamin_deficiencies.length) {
+        notes.push(`<div class="glass-elev p-3"><span class="font-semibold text-indigo-300">비타민 결핍:</span> ${s.vitamin_deficiencies.join(', ')}</div>`);
+    }
+    document.getElementById('summary-notes').innerHTML = notes.join('');
+
+    document.getElementById('media-info').textContent =
+        `배지: ${data.media_display || data.media_key}${data.peptone_g_per_L ? ' · ' + data.peptone_g_per_L + 'g/L' : ''}`;
+
+    // Chart
+    const recs = data.recommendations || [];
+    Plotly.newPlot('chart', [{
+        type: 'bar',
+        x: recs.map(r => r.peptone),
+        y: recs.map(r => r.score),
+        marker: {
+            color: recs.map(r => r.score),
+            colorscale: 'Viridis',
+            line: { color: 'rgba(255,255,255,0.15)', width: 1 },
+        },
+        hovertemplate: '<b>%{x}</b><br>점수: %{y:.1f}<extra></extra>',
+    }], {
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor:  'rgba(0,0,0,0)',
+        font: { family: 'Inter, sans-serif', color: '#e2e8f0' },
+        margin: { t: 20, r: 20, b: 60, l: 50 },
+        xaxis: { tickangle: -30, gridcolor: 'rgba(148,163,184,0.1)' },
+        yaxis: { title: '매칭 점수', gridcolor: 'rgba(148,163,184,0.1)' },
+    }, {displayModeBar: false, responsive: true});
+
+    // Table
+    const tbody = document.getElementById('result-tbody');
+    tbody.innerHTML = recs.map(r => `
+        <tr>
+            <td class="font-semibold">${r.rank}</td>
+            <td class="font-medium">${r.peptone}</td>
+            <td><span class="badge badge-ok">${(+r.score).toFixed(1)}</span></td>
+            <td style="color: var(--text-dim);">${r.explanation || ''}</td>
+        </tr>
+    `).join('');
+
+    results.classList.remove('hidden');
+}
+
+document.getElementById('csv-btn').addEventListener('click', () => {
+    if (!lastResult) return;
+    const recs = lastResult.recommendations || [];
+    const header = ['rank', 'peptone', 'score', 'explanation'];
+    const rows = [header.join(',')];
+    recs.forEach(r => {
+        rows.push(header.map(h => JSON.stringify(r[h] ?? '')).join(','));
+    });
+    const blob = new Blob(["\ufeff" + rows.join('\n')], {type: 'text/csv;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `peptomatch_strain${lastResult.strain_id}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+});
+</script>
+{% endblock %}

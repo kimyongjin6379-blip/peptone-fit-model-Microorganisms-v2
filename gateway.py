@@ -1,144 +1,148 @@
 """
-PeptoMatch API Gateway (Railway-compatible)
+PeptoMatch FastAPI Application (Railway-ready)
 
-FastAPI gateway that:
-1. Handles /api/* endpoints for growth data ingestion
-2. Reverse-proxies all other requests to Streamlit (internal subprocess)
-3. Proxies WebSocket for Streamlit's real-time updates
+Pure FastAPI + Jinja2 + Tailwind (CDN) stack. Streamlit has been dropped:
+earlier Railway deployments struggled with the subprocess/WebSocket proxy,
+so this module replaces the UI with server-rendered HTML pages that reuse
+the existing peptomatch Python backend (scoring, strain DB, growth DB).
 
-Key: Returns 200 loading page (not 503) while Streamlit boots,
-so Railway health checks pass immediately.
+Endpoints
+─────────
+UI pages
+    GET  /                    Dashboard
+    GET  /recommend           Peptone recommendation form + results
+    GET  /growth              Growth-curve experiment browser
+
+Growth Data API (called by growth-curve-app)
+    POST /api/ingest
+    GET  /api/growth/summary
+    GET  /api/growth/experiments
+    GET  /api/growth/curves
+    GET  /api/growth/ml-data
+    GET  /api/growth/fba-data
+
+Recommendation API
+    POST /api/recommend       JSON in/out, used by /recommend page
+
+Health
+    GET  /healthz             Always 200 JSON
+    GET  /api/health          Always 200 JSON
 """
 
-import asyncio
+from __future__ import annotations
+
 import logging
 import os
-import subprocess
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Optional
 
-import httpx
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 logger = logging.getLogger("peptomatch.gateway")
 logging.basicConfig(level=logging.INFO)
 
-# Import GrowthDB (handles both installed package and source paths)
-# Add src/ to sys.path as a fallback in case `pip install -e .` didn't run
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_SRC = os.path.join(_HERE, "src")
-if os.path.isdir(_SRC) and _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
+# ── Path setup ────────────────────────────────────────────────
+_HERE = Path(__file__).parent.resolve()
+_SRC = _HERE / "src"
+if _SRC.is_dir() and str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
+# Backend imports (wrapped in try/except so the app can still start
+# and serve /healthz even if any one module fails)
 try:
     from peptomatch.growth_db import GrowthDB
-except ImportError as e:
-    logging.error(f"Failed to import GrowthDB: {e}")
-    raise
+except Exception as e:
+    logger.error(f"Failed to import GrowthDB: {e}")
+    GrowthDB = None  # type: ignore
 
-STREAMLIT_PORT = int(os.getenv("STREAMLIT_INTERNAL_PORT", "8501"))
-STREAMLIT_URL = f"http://127.0.0.1:{STREAMLIT_PORT}"
+try:
+    from peptomatch.utils import load_config
+    from peptomatch.io_loaders import load_composition_data
+    from peptomatch.scoring import PeptoneRecommender
+    from peptomatch.explain import RecommendationExplainer
+    from peptomatch.strain_db import StrainDB
+    from peptomatch.media_config import (
+        get_all_media_keys, get_media_display_name, get_default_media,
+        MEDIA_CONFIGS,
+    )
+    _BACKEND_OK = True
+except Exception as e:
+    logger.error(f"Failed to import peptomatch backend: {e}")
+    _BACKEND_OK = False
 
-growth_db: GrowthDB = None
-streamlit_proc: subprocess.Popen = None
-streamlit_ready = False
-
-LOADING_HTML = """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>PeptoMatch</title>
-<meta http-equiv="refresh" content="3">
-<style>body{display:flex;justify-content:center;align-items:center;height:100vh;
-font-family:sans-serif;background:#f0f2f6;color:#333;}
-.box{text-align:center;}.spinner{width:40px;height:40px;border:4px solid #ddd;
-border-top:4px solid #D32F2F;border-radius:50%;animation:spin 1s linear infinite;
-margin:0 auto 16px;}@keyframes spin{to{transform:rotate(360deg);}}</style>
-</head><body><div class="box"><div class="spinner"></div>
-<h2>PeptoMatch Loading...</h2><p>Streamlit is starting up. This page will auto-refresh.</p>
-</div></body></html>"""
-
-
-async def _wait_for_streamlit():
-    """Background task: poll Streamlit health until ready."""
-    global streamlit_ready
-    for _ in range(120):
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.get(f"{STREAMLIT_URL}/_stcore/health", timeout=3)
-                if r.status_code == 200:
-                    streamlit_ready = True
-                    logger.info("Streamlit is ready!")
-                    return
-        except Exception:
-            pass
-        await asyncio.sleep(2)
-    logger.error("Streamlit did not become ready within timeout")
+# ── Globals populated by lifespan ─────────────────────────────
+growth_db: Optional["GrowthDB"] = None
+strain_db: Optional[Any] = None
+comp_df: Optional[Any] = None
+app_config: Optional[dict] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: everything is wrapped in try/except so gateway NEVER fails to start.
-    Railway health check on /healthz must succeed immediately.
-    """
-    global growth_db, streamlit_proc
+    """Startup: all initialization is best-effort so /healthz always returns 200."""
+    global growth_db, strain_db, comp_df, app_config
 
-    # 1. Init DB (fast, catch errors but don't block)
-    try:
-        growth_db = GrowthDB()
-        logger.info(f"Growth DB initialized: {growth_db.db_path}")
-    except Exception as e:
-        logger.error(f"GrowthDB init failed: {e}")
-        growth_db = None
+    # Growth DB (required for API ingestion)
+    if GrowthDB is not None:
+        try:
+            growth_db = GrowthDB()
+            logger.info(f"GrowthDB ready: {growth_db.db_path}")
+        except Exception as e:
+            logger.error(f"GrowthDB init failed: {e}")
 
-    # 2. Start Streamlit subprocess (non-critical for health check)
-    try:
-        streamlit_cmd = [
-            sys.executable, "-m", "streamlit", "run",
-            "app/streamlit_app.py",
-            "--server.port", str(STREAMLIT_PORT),
-            "--server.address", "127.0.0.1",
-            "--server.headless", "true",
-            "--browser.gatherUsageStats", "false",
-        ]
-        logger.info(f"Starting Streamlit: {' '.join(streamlit_cmd)}")
-        streamlit_proc = subprocess.Popen(
-            streamlit_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        logger.info(f"Streamlit subprocess started (PID {streamlit_proc.pid})")
-    except Exception as e:
-        logger.error(f"Streamlit subprocess failed to start: {e}")
-        streamlit_proc = None
+    # PeptoMatch backend (composition + strain DB + config)
+    if _BACKEND_OK:
+        try:
+            cfg_path = _HERE / "config" / "config.yaml"
+            app_config = load_config(cfg_path) if cfg_path.exists() else load_config()
+            logger.info("config.yaml loaded")
+        except Exception as e:
+            logger.error(f"config load failed: {e}")
 
-    # 3. Background health-check (non-blocking)
-    try:
-        asyncio.create_task(_wait_for_streamlit())
-    except Exception as e:
-        logger.error(f"Failed to start health check task: {e}")
+        try:
+            sdb = StrainDB(_HERE / "data" / "strains.db")
+            if sdb.count() == 0 and app_config:
+                strain_path = Path(app_config["data"]["strain_file"])
+                if strain_path.exists():
+                    sdb.load_from_excel(strain_path)
+            strain_db = sdb
+            logger.info(f"StrainDB ready (count={sdb.count()})")
+        except Exception as e:
+            logger.error(f"StrainDB init failed: {e}")
 
-    # Gateway is ready NOW for Railway health check
-    logger.info("Gateway lifespan startup complete")
+        try:
+            if app_config:
+                comp_df = load_composition_data(
+                    Path(app_config["data"]["composition_file"]),
+                    sheet_name=app_config["data"].get("composition_sheet", "data"),
+                )
+                logger.info(f"composition loaded: {len(comp_df)} peptones")
+        except Exception as e:
+            logger.error(f"composition load failed: {e}")
+
+    logger.info("PeptoMatch gateway startup complete")
     yield
 
-    # Cleanup
-    if streamlit_proc:
-        try:
-            streamlit_proc.terminate()
-            streamlit_proc.wait(timeout=5)
-        except Exception:
-            try:
-                streamlit_proc.kill()
-            except Exception:
-                pass
-    if growth_db:
+    # Shutdown
+    if growth_db is not None:
         try:
             growth_db.close()
         except Exception:
             pass
+    if strain_db is not None:
+        try:
+            strain_db.close()
+        except Exception:
+            pass
 
 
-app = FastAPI(title="PeptoMatch Gateway", lifespan=lifespan)
+app = FastAPI(title="PeptoMatch", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -147,16 +151,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Templates + static ────────────────────────────────────────
+TEMPLATES_DIR = _HERE / "templates"
+STATIC_DIR = _HERE / "static"
+TEMPLATES_DIR.mkdir(exist_ok=True)
+STATIC_DIR.mkdir(exist_ok=True)
 
-# ── Health check (always 200) ──────────────────────────────────
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+# ── Health ────────────────────────────────────────────────────
 
 @app.get("/healthz")
 async def healthz():
-    """Always return 200 for Railway health check."""
     return JSONResponse({
         "status": "ok",
-        "streamlit_ready": streamlit_ready,
         "db_ready": growth_db is not None,
+        "strain_db_ready": strain_db is not None,
+        "comp_loaded": comp_df is not None,
     })
 
 
@@ -165,18 +178,164 @@ async def api_health():
     return JSONResponse({"status": "ok"})
 
 
-# ── Growth Data API ────────────────────────────────────────────
+# ── UI pages ──────────────────────────────────────────────────
+
+def _ctx(request: Request, **extra) -> dict:
+    """Base template context."""
+    return {
+        "request": request,
+        "backend_ok": _BACKEND_OK and strain_db is not None and comp_df is not None,
+        "growth_ok": growth_db is not None,
+        **extra,
+    }
+
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    summary = {}
+    if growth_db is not None:
+        try:
+            summary = growth_db.get_summary()
+        except Exception as e:
+            logger.warning(f"summary failed: {e}")
+
+    strain_count = 0
+    peptone_count = 0
+    if strain_db is not None:
+        try:
+            strain_count = strain_db.count()
+        except Exception:
+            pass
+    if comp_df is not None:
+        try:
+            peptone_count = int(len(comp_df))
+        except Exception:
+            pass
+
+    return templates.TemplateResponse(
+        "home.html",
+        _ctx(
+            request,
+            summary=summary,
+            strain_count=strain_count,
+            peptone_count=peptone_count,
+        ),
+    )
+
+
+@app.get("/recommend", response_class=HTMLResponse)
+async def recommend_page(request: Request):
+    strains = []
+    media_options = []
+    if strain_db is not None:
+        try:
+            df = strain_db.get_strain_df()
+            strains = [
+                {"id": int(r["strain_id"]), "name": r.get("full_name", "")}
+                for _, r in df.iterrows()
+            ]
+        except Exception as e:
+            logger.warning(f"strain list failed: {e}")
+    if _BACKEND_OK:
+        try:
+            media_options = [
+                {"key": k, "label": get_media_display_name(k)}
+                for k in get_all_media_keys()
+            ]
+        except Exception:
+            pass
+
+    return templates.TemplateResponse(
+        "recommend.html",
+        _ctx(request, strains=strains, media_options=media_options),
+    )
+
+
+@app.get("/growth", response_class=HTMLResponse)
+async def growth_page(request: Request):
+    experiments: list[dict] = []
+    summary: dict = {}
+    if growth_db is not None:
+        try:
+            experiments = growth_db.get_experiments()
+            summary = growth_db.get_summary()
+        except Exception as e:
+            logger.warning(f"growth_db query failed: {e}")
+    return templates.TemplateResponse(
+        "growth.html",
+        _ctx(request, experiments=experiments, summary=summary),
+    )
+
+
+# ── Recommendation API (used by /recommend page JS) ───────────
+
+@app.post("/api/recommend")
+async def api_recommend(payload: dict):
+    if not (_BACKEND_OK and strain_db is not None and comp_df is not None):
+        return JSONResponse(
+            status_code=503,
+            content={"error": "backend not initialized"},
+        )
+
+    try:
+        strain_id = int(payload.get("strain_id"))
+        top_k = int(payload.get("top_k", 10))
+        media_key = payload.get("media_key") or None
+        sempio_only = bool(payload.get("sempio_only", True))
+        language = payload.get("language", "ko")
+
+        sdf = strain_db.get_strain_df()
+        if sdf.empty:
+            return JSONResponse(status_code=400, content={"error": "no strains in DB"})
+
+        # Auto default media from genus if not provided
+        if not media_key:
+            row = sdf[sdf["strain_id"] == strain_id]
+            genus = row.iloc[0].get("genus", "") if not row.empty else ""
+            media_key = get_default_media(genus)
+
+        recommender = PeptoneRecommender(comp_df, sdf, app_config)
+        pf = app_config.get("peptone_filter") if sempio_only else None
+        recs = recommender.recommend(
+            strain_id, top_k=top_k, peptone_filter=pf, media_key=media_key,
+        )
+
+        explainer = RecommendationExplainer(comp_df, sdf, app_config, language=language)
+        recs = explainer.explain_batch(strain_id, recs, top_n_reasons=3)
+        summary = explainer.get_strain_summary(strain_id)
+
+        # Convert DataFrame → list[dict] with only the columns the UI needs
+        keep_cols = [c for c in ("rank", "peptone", "score", "explanation") if c in recs.columns]
+        rows = recs[keep_cols].to_dict(orient="records")
+
+        media_cfg = MEDIA_CONFIGS.get(media_key, {})
+        return JSONResponse({
+            "status": "ok",
+            "strain_id": strain_id,
+            "media_key": media_key,
+            "media_display": media_cfg.get("display_name", media_key),
+            "peptone_g_per_L": media_cfg.get("peptone_g_per_L"),
+            "summary": summary,
+            "recommendations": rows,
+        })
+    except Exception as e:
+        logger.exception(f"recommend failed: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── Growth Data API ───────────────────────────────────────────
 
 def _require_db():
     if growth_db is None:
-        return JSONResponse(status_code=503, content={"error": "database not initialized"})
+        return JSONResponse(status_code=503, content={"error": "growth_db not initialized"})
     return None
 
 
 @app.post("/api/ingest")
 async def ingest_growth_data(payload: dict):
     err = _require_db()
-    if err: return err
+    if err:
+        return err
     try:
         result = growth_db.ingest(payload)
         logger.info(f"Ingest OK: {result}")
@@ -189,127 +348,38 @@ async def ingest_growth_data(payload: dict):
 @app.get("/api/growth/summary")
 async def growth_summary():
     err = _require_db()
-    if err: return err
+    if err:
+        return err
     return JSONResponse(content=growth_db.get_summary())
 
 
 @app.get("/api/growth/experiments")
-async def list_experiments(media_type: str = None):
+async def list_experiments(media_type: Optional[str] = None):
     err = _require_db()
-    if err: return err
+    if err:
+        return err
     return JSONResponse(content=growth_db.get_experiments(media_type))
 
 
 @app.get("/api/growth/curves")
-async def list_curves(experiment_id: int = None):
+async def list_curves(experiment_id: Optional[int] = None):
     err = _require_db()
-    if err: return err
+    if err:
+        return err
     return JSONResponse(content=growth_db.get_curves_with_metrics(experiment_id))
 
 
 @app.get("/api/growth/ml-data")
 async def ml_training_data():
     err = _require_db()
-    if err: return err
+    if err:
+        return err
     return JSONResponse(content=growth_db.get_ml_training_data())
 
 
 @app.get("/api/growth/fba-data")
 async def fba_validation_data():
     err = _require_db()
-    if err: return err
+    if err:
+        return err
     return JSONResponse(content=growth_db.get_fba_validation_data())
-
-
-# ── Streamlit Reverse Proxy ────────────────────────────────────
-
-@app.get("/")
-async def root(request: Request):
-    return await _proxy_http(request, "")
-
-
-@app.api_route(
-    "/{path:path}",
-    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
-)
-async def proxy_catchall(request: Request, path: str = ""):
-    return await _proxy_http(request, path)
-
-
-async def _proxy_http(request: Request, path: str) -> Response:
-    """Forward HTTP request to Streamlit, or show loading page."""
-    if not streamlit_ready:
-        return HTMLResponse(LOADING_HTML, status_code=200)
-
-    url = f"{STREAMLIT_URL}/{path}"
-    if request.url.query:
-        url += f"?{request.url.query}"
-
-    try:
-        body = await request.body()
-        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.request(
-                method=request.method, url=url,
-                headers=headers, content=body,
-            )
-
-        skip = {"content-encoding", "transfer-encoding", "content-length"}
-        resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in skip}
-        return Response(content=resp.content, status_code=resp.status_code, headers=resp_headers)
-
-    except httpx.ConnectError:
-        return HTMLResponse(LOADING_HTML, status_code=200)
-    except Exception as e:
-        logger.error(f"Proxy error [{path}]: {e}")
-        return HTMLResponse(f"<h3>Proxy Error</h3><p>{e}</p>", status_code=502)
-
-
-# ── WebSocket Proxy ────────────────────────────────────────────
-
-from starlette.websockets import WebSocket, WebSocketDisconnect
-
-@app.websocket("/_stcore/stream")
-async def ws_proxy(client_ws: WebSocket):
-    """Proxy Streamlit WebSocket connection."""
-    await client_ws.accept()
-
-    import websockets
-    target = f"ws://127.0.0.1:{STREAMLIT_PORT}/_stcore/stream"
-
-    try:
-        async with websockets.connect(target) as server_ws:
-            async def forward_client():
-                try:
-                    while True:
-                        msg = await client_ws.receive_text()
-                        await server_ws.send(msg)
-                except (WebSocketDisconnect, Exception):
-                    pass
-
-            async def forward_server():
-                try:
-                    async for msg in server_ws:
-                        if isinstance(msg, str):
-                            await client_ws.send_text(msg)
-                        else:
-                            await client_ws.send_bytes(msg)
-                except Exception:
-                    pass
-
-            done, pending = await asyncio.wait(
-                [asyncio.create_task(forward_client()),
-                 asyncio.create_task(forward_server())],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for t in pending:
-                t.cancel()
-
-    except Exception as e:
-        logger.warning(f"WS proxy error: {e}")
-    finally:
-        try:
-            await client_ws.close()
-        except Exception:
-            pass

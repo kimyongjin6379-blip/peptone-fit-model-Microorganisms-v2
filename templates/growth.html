@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% set active = 'growth' %}
+{% block title %}PeptoMatch · 성장 데이터{% endblock %}
+
+{% block content %}
+<div class="glass p-6 mb-5">
+    <div class="flex items-center justify-between mb-2">
+        <h1 class="text-xl font-bold">📊 성장 데이터</h1>
+        <span class="text-xs" style="color: var(--text-dim);">
+            자동 적재: growth-curve-app → /api/ingest
+        </span>
+    </div>
+    <p class="text-sm" style="color: var(--text-dim);">
+        실험 데이터가 처리되면 자동으로 이 DB에 저장됩니다. 팀 표준 약어(LR, SOY-N+ 등)로 균주·펩톤이 매칭됩니다.
+    </p>
+</div>
+
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+    <div class="metric-card">
+        <div class="text-xs" style="color: var(--text-dim);">총 실험</div>
+        <div class="text-3xl font-bold mt-1">{{ summary.get('total_experiments', 0) }}</div>
+    </div>
+    <div class="metric-card">
+        <div class="text-xs" style="color: var(--text-dim);">성장 곡선</div>
+        <div class="text-3xl font-bold mt-1">{{ summary.get('total_curves', 0) }}</div>
+    </div>
+    <div class="metric-card">
+        <div class="text-xs" style="color: var(--text-dim);">펩톤 스크리닝</div>
+        <div class="text-3xl font-bold mt-1">{{ summary.get('peptone_screening', 0) }}</div>
+    </div>
+    <div class="metric-card">
+        <div class="text-xs" style="color: var(--text-dim);">배지 최적화</div>
+        <div class="text-3xl font-bold mt-1">{{ summary.get('media_optimization', 0) }}</div>
+    </div>
+</div>
+
+<div class="glass p-6 mb-5">
+    <h2 class="text-lg font-semibold mb-3">실험 목록</h2>
+    {% if experiments %}
+    <div class="overflow-x-auto">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>날짜</th>
+                    <th>균주</th>
+                    <th>유형</th>
+                    <th>파일명</th>
+                    <th>처리일시</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for e in experiments %}
+                <tr>
+                    <td class="font-semibold">{{ e.id }}</td>
+                    <td>{{ e.experiment_date or '-' }}</td>
+                    <td>{{ e.strain_name or '-' }}</td>
+                    <td>
+                        {% if e.media_type == 'peptone_screening' %}
+                        <span class="badge badge-ok">펩톤</span>
+                        {% elif e.media_type == 'media_optimization' %}
+                        <span class="badge badge-warn">배지</span>
+                        {% else %}
+                        <span class="badge">{{ e.media_type }}</span>
+                        {% endif %}
+                    </td>
+                    <td style="color: var(--text-dim);">{{ e.source_filename or '-' }}</td>
+                    <td style="color: var(--text-dim); font-size: 12px;">{{ e.processed_at or '-' }}</td>
+                    <td>
+                        <button class="text-xs px-3 py-1 rounded-lg view-btn"
+                                style="background: rgba(99, 102, 241, 0.18); color: #c7d2fe;"
+                                data-id="{{ e.id }}">
+                            곡선 보기
+                        </button>
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-sm text-center py-8" style="color: var(--text-dim);">
+        적재된 실험이 없습니다. growth-curve-app에서 파일을 처리하면 자동으로 나타납니다.
+    </div>
+    {% endif %}
+</div>
+
+<div id="curve-panel" class="glass p-6 hidden">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold">성장 곡선</h2>
+        <span class="text-xs" style="color: var(--text-dim);" id="curve-exp-label"></span>
+    </div>
+    <div id="curve-chart" style="width: 100%; height: 420px;"></div>
+    <div class="mt-4 overflow-x-auto">
+        <table>
+            <thead>
+                <tr>
+                    <th>샘플</th>
+                    <th>펩톤</th>
+                    <th>%</th>
+                    <th>Max OD</th>
+                    <th>μmax (h⁻¹)</th>
+                    <th>Doubling (h)</th>
+                    <th>Lag (h)</th>
+                    <th>AUC</th>
+                </tr>
+            </thead>
+            <tbody id="curve-tbody"></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+document.querySelectorAll('.view-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const expId = btn.dataset.id;
+        try {
+            const resp = await fetch(`/api/growth/curves?experiment_id=${expId}`);
+            const curves = await resp.json();
+            renderCurves(expId, curves);
+        } catch (err) {
+            alert('곡선 로드 실패: ' + err.message);
+        }
+    });
+});
+
+function renderCurves(expId, curves) {
+    const panel = document.getElementById('curve-panel');
+    panel.classList.remove('hidden');
+    panel.scrollIntoView({behavior: 'smooth', block: 'start'});
+    document.getElementById('curve-exp-label').textContent = `실험 #${expId} · ${curves.length}개 샘플`;
+
+    const traces = curves.map(c => {
+        let t = [], y = [], sd = [];
+        try { t  = JSON.parse(c.time_hours_json || '[]'); } catch {}
+        try { y  = JSON.parse(c.mean_od_json    || '[]'); } catch {}
+        try { sd = JSON.parse(c.sd_od_json      || '[]'); } catch {}
+        return {
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: c.peptone_name || c.group_code || `#${c.id}`,
+            x: t,
+            y: y,
+            error_y: sd.length ? { type: 'data', array: sd, visible: true, thickness: 1 } : undefined,
+            line: { width: 2 },
+            marker: { size: 5 },
+        };
+    });
+
+    Plotly.newPlot('curve-chart', traces, {
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor:  'rgba(0,0,0,0)',
+        font:   { family: 'Inter, sans-serif', color: '#e2e8f0' },
+        margin: { t: 20, r: 20, b: 50, l: 50 },
+        xaxis:  { title: 'Time (h)', gridcolor: 'rgba(148,163,184,0.1)' },
+        yaxis:  { title: 'OD',        gridcolor: 'rgba(148,163,184,0.1)' },
+        legend: { bgcolor: 'rgba(0,0,0,0)', orientation: 'h', y: -0.15 },
+    }, {displayModeBar: false, responsive: true});
+
+    const tbody = document.getElementById('curve-tbody');
+    tbody.innerHTML = curves.map(c => `
+        <tr>
+            <td>${c.group_code || '-'}</td>
+            <td>${c.peptone_name || '-'}</td>
+            <td>${c.peptone_pct ?? '-'}</td>
+            <td>${c.max_od != null ? (+c.max_od).toFixed(3) : '-'}</td>
+            <td>${c.mu_max != null ? (+c.mu_max).toFixed(3) : '-'}</td>
+            <td>${c.doubling_time_h != null ? (+c.doubling_time_h).toFixed(2) : '-'}</td>
+            <td>${c.lag_time_h != null ? (+c.lag_time_h).toFixed(2) : '-'}</td>
+            <td>${c.auc != null ? (+c.auc).toFixed(2) : '-'}</td>
+        </tr>
+    `).join('');
+}
+</script>
+{% endblock %}
