@@ -22,7 +22,10 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from src.peptomatch.growth_db import GrowthDB
+try:
+    from peptomatch.growth_db import GrowthDB
+except ImportError:
+    from src.peptomatch.growth_db import GrowthDB
 
 logger = logging.getLogger("peptomatch.gateway")
 logging.basicConfig(level=logging.INFO)
