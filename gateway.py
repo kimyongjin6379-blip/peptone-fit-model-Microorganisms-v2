@@ -232,8 +232,9 @@ async def home(request: Request):
             pass
 
     return templates.TemplateResponse(
-        "home.html",
-        _ctx(
+        request=request,
+        name="home.html",
+        context=_ctx(
             request,
             summary=summary,
             strain_count=strain_count,
@@ -265,8 +266,9 @@ async def recommend_page(request: Request):
             pass
 
     return templates.TemplateResponse(
-        "recommend.html",
-        _ctx(request, strains=strains, media_options=media_options),
+        request=request,
+        name="recommend.html",
+        context=_ctx(request, strains=strains, media_options=media_options),
     )
 
 
@@ -281,8 +283,9 @@ async def growth_page(request: Request):
         except Exception as e:
             logger.warning(f"growth_db query failed: {e}")
     return templates.TemplateResponse(
-        "growth.html",
-        _ctx(request, experiments=experiments, summary=summary),
+        request=request,
+        name="growth.html",
+        context=_ctx(request, experiments=experiments, summary=summary),
     )
 
 
