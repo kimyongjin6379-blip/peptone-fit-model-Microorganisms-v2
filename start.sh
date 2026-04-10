@@ -2,7 +2,7 @@
 # ============================================================
 # PeptoMatch 시작 스크립트 (Railway용)
 # 1. KofamScan 설치 확인 (없으면 자동 다운로드)
-# 2. Streamlit 앱 실행
+# 2. FastAPI 게이트웨이 실행 (Streamlit을 내부 프록시)
 # ============================================================
 
 set -e
@@ -17,8 +17,8 @@ bash /app/scripts/setup_kofamscan.sh || echo "KofamScan setup skipped (non-criti
 export KOFAMSCAN_PATH="${KOFAM_DIR}/kofam_scan/exec_annotation"
 export KOFAMSCAN_PROFILES="${KOFAM_DIR}/profiles"
 
-# Streamlit 실행
-exec streamlit run app/streamlit_app.py \
-    --server.port="${PORT:-8501}" \
-    --server.address=0.0.0.0 \
-    --server.headless=true
+# FastAPI 게이트웨이 실행 (Streamlit은 게이트웨이 내부에서 subprocess로 시작)
+exec uvicorn gateway:app \
+    --host 0.0.0.0 \
+    --port "${PORT:-8000}" \
+    --log-level info

@@ -10,3 +10,7 @@ plotly>=5.17
 tqdm>=4.66
 fpdf2>=2.7
 kaleido>=0.2
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+httpx>=0.25.0
+websockets>=12.0
