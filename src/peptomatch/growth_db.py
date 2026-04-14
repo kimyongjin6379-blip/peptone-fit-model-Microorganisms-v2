@@ -32,6 +32,8 @@ STRAIN_ALIASES = {
 PEPTONE_ALIASES = {
     "1": "SOY-1",
     "N": "SOY-N+",
+    "L": "SOY-L",
+    "B": "SOY-B",
     "SP": "SOY-SP",
     "W": "WHEAT-1",
     "R": "RICE-1",
