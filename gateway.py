@@ -71,6 +71,7 @@ try:
         get_all_media_keys, get_media_display_name, get_default_media,
         MEDIA_CONFIGS,
     )
+    from peptomatch.kegg_viz import KEGGVisualizer
     _BACKEND_OK = True
 except Exception as e:
     logger.error(f"Failed to import peptomatch backend: {e}")
@@ -287,6 +288,122 @@ async def growth_page(request: Request):
         name="growth.html",
         context=_ctx(request, experiments=experiments, summary=summary),
     )
+
+
+@app.get("/kegg", response_class=HTMLResponse)
+async def kegg_page(request: Request):
+    strains = []
+    if strain_db is not None:
+        try:
+            df = strain_db.get_strain_df()
+            strains = [
+                {"id": int(r["strain_id"]), "name": r.get("full_name", "")}
+                for _, r in df.iterrows()
+            ]
+        except Exception as e:
+            logger.warning(f"strain list failed: {e}")
+    return templates.TemplateResponse(
+        request=request,
+        name="kegg.html",
+        context=_ctx(request, strains=strains),
+    )
+
+
+# ── KEGG API (used by /kegg page JS) ─────────────────────────
+
+@app.post("/api/kegg/analyze")
+async def api_kegg_analyze(payload: dict):
+    if not (_BACKEND_OK and strain_db is not None):
+        return JSONResponse(status_code=503, content={"error": "backend not initialized"})
+
+    try:
+        strain_id = int(payload.get("strain_id"))
+        sdf = strain_db.get_strain_df()
+        viz = KEGGVisualizer(sdf, app_config)
+
+        # Prior info
+        prior = viz.prior_builder.get_prior(strain_id)
+        source = prior.get("source", "unknown")
+        ko_count = prior.get("ko_count", 0)
+        org_code = prior.get("kegg_org_code", "")
+
+        # Charts → Plotly JSON
+        import json as _json
+        overview_json = _json.loads(viz.overview_chart(strain_id).to_json())
+        aa_json = _json.loads(viz.aa_pathway_chart(strain_id).to_json())
+        vit_json = _json.loads(viz.vitamin_chart(strain_id).to_json())
+
+        # Deficient AAs/vitamins for flowcharts
+        aa_synth = prior.get("aa_biosynthesis", {})
+        vit_synth = prior.get("vitamin_biosynthesis", {})
+
+        deficient_aa = [aa for aa, v in sorted(aa_synth.items(), key=lambda x: x[1]) if v < 0.8][:3]
+        deficient_vit = [v for v, val in sorted(vit_synth.items(), key=lambda x: x[1]) if val < 0.8][:3]
+
+        aa_flowcharts = {}
+        for aa in deficient_aa:
+            try:
+                fig = viz.pathway_detail_chart(strain_id, aa)
+                aa_flowcharts[aa] = _json.loads(fig.to_json())
+            except Exception:
+                pass
+
+        vit_flowcharts = {}
+        for vit in deficient_vit:
+            try:
+                fig = viz.pathway_detail_chart(strain_id, vit, pathway_source="vitamin")
+                vit_flowcharts[vit] = _json.loads(fig.to_json())
+            except Exception:
+                pass
+
+        # Explorable lists (all AA and vitamin names)
+        all_aa = sorted(aa_synth.keys())
+        all_vit = sorted(vit_synth.keys()) if vit_synth else []
+
+        return JSONResponse({
+            "status": "ok",
+            "strain_id": strain_id,
+            "source": source,
+            "ko_count": ko_count,
+            "org_code": org_code,
+            "overview": overview_json,
+            "aa_chart": aa_json,
+            "vit_chart": vit_json,
+            "deficient_aa_flowcharts": aa_flowcharts,
+            "deficient_vit_flowcharts": vit_flowcharts,
+            "all_aa": all_aa,
+            "all_vit": all_vit,
+        })
+    except Exception as e:
+        logger.exception(f"kegg analyze failed: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/kegg/pathway-detail")
+async def api_kegg_pathway_detail(payload: dict):
+    """Fetch a single pathway flowchart for the explorer."""
+    if not (_BACKEND_OK and strain_db is not None):
+        return JSONResponse(status_code=503, content={"error": "backend not initialized"})
+
+    try:
+        strain_id = int(payload.get("strain_id"))
+        pathway = payload.get("pathway", "")
+        source = payload.get("pathway_source", "aa")  # "aa" or "vitamin"
+
+        sdf = strain_db.get_strain_df()
+        viz = KEGGVisualizer(sdf, app_config)
+        fig = viz.pathway_detail_chart(
+            strain_id, pathway,
+            pathway_source="vitamin" if source == "vitamin" else None,
+        )
+        import json as _json
+        return JSONResponse({
+            "status": "ok",
+            "chart": _json.loads(fig.to_json()),
+        })
+    except Exception as e:
+        logger.exception(f"pathway detail failed: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 # ── Recommendation API (used by /recommend page JS) ───────────

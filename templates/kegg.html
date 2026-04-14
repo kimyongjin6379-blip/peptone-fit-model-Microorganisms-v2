@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% set active = 'kegg' %}
+{% block title %}PeptoMatch · KEGG 경로{% endblock %}
+
+{% block content %}
+<div class="glass p-6 mb-5">
+    <h1 class="text-xl font-bold mb-4">🧬 KEGG 생합성 경로 시각화</h1>
+    <p class="text-sm mb-4" style="color: var(--text-dim);">
+        균주의 아미노산·비타민 생합성 경로 완성도를 시각화합니다.
+    </p>
+
+    <form id="kegg-form" class="flex items-end gap-4">
+        <div class="flex-1">
+            <label class="block text-xs mb-1" style="color: var(--text-dim);">균주</label>
+            <select name="strain_id" id="strain_id" class="form-select" required>
+                {% for s in strains %}
+                <option value="{{ s.id }}">{{ s.id }} · {{ s.name }}</option>
+                {% else %}
+                <option value="">(등록된 균주 없음)</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" id="submit-btn" class="btn-primary px-6 py-2.5 rounded-xl text-sm">
+            🔬 경로 분석
+        </button>
+    </form>
+</div>
+
+<div id="status" class="hidden glass p-4 mb-5">
+    <div class="flex items-center gap-3 text-sm">
+        <div class="spinner"></div>
+        <span>KEGG 경로 분석 중... (첫 분석 시 10~30초 소요)</span>
+    </div>
+</div>
+
+<div id="error-box" class="hidden glass p-4 mb-5" style="border-color: rgba(239, 68, 68, 0.45);">
+    <div class="text-sm text-red-300" id="error-text"></div>
+</div>
+
+<div id="results" class="hidden space-y-5">
+    <!-- Data source info -->
+    <div class="glass p-4" id="source-info"></div>
+
+    <!-- Overview heatmap -->
+    <div class="glass p-6">
+        <h2 class="text-lg font-semibold mb-3">경로 종합 Overview</h2>
+        <div id="chart-overview" style="width:100%; min-height:400px;"></div>
+    </div>
+
+    <!-- AA biosynthesis -->
+    <div class="glass p-6">
+        <h2 class="text-lg font-semibold mb-3">아미노산 생합성 완성도</h2>
+        <div id="chart-aa" style="width:100%; min-height:400px;"></div>
+    </div>
+
+    <!-- Vitamin biosynthesis -->
+    <div class="glass p-6">
+        <h2 class="text-lg font-semibold mb-3">비타민 생합성 완성도</h2>
+        <div id="chart-vit" style="width:100%; min-height:400px;"></div>
+    </div>
+
+    <!-- Deficient AA flowcharts -->
+    <div id="aa-flowcharts-section" class="hidden">
+        <div class="glass p-6">
+            <h2 class="text-lg font-semibold mb-2">🔬 주요 결핍 아미노산 경로 플로우차트</h2>
+            <p class="text-xs mb-4" style="color: var(--text-dim);">
+                각 효소를 박스로 표시하고 화살표로 연결합니다. 초록=존재, 빨강=결핍, ★=핵심 효소
+            </p>
+            <div id="aa-flowcharts" class="space-y-4"></div>
+        </div>
+    </div>
+
+    <!-- Deficient Vitamin flowcharts -->
+    <div id="vit-flowcharts-section" class="hidden">
+        <div class="glass p-6">
+            <h2 class="text-lg font-semibold mb-2">🔬 주요 결핍 비타민 경로 플로우차트</h2>
+            <div id="vit-flowcharts" class="space-y-4"></div>
+        </div>
+    </div>
+
+    <!-- Interactive Explorer -->
+    <div class="glass p-6">
+        <h2 class="text-lg font-semibold mb-4">🗺️ 경로 탐색기</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+                <label class="block text-xs mb-1" style="color: var(--text-dim);">아미노산 경로 선택</label>
+                <select id="explore-aa" class="form-select">
+                    <option value="">(분석 후 선택 가능)</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs mb-1" style="color: var(--text-dim);">비타민 경로 선택</label>
+                <select id="explore-vit" class="form-select">
+                    <option value="">(선택 안 함)</option>
+                </select>
+            </div>
+        </div>
+        <div id="explore-loading" class="hidden text-sm text-center py-4" style="color: var(--text-dim);">
+            <div class="spinner inline-block mr-2" style="width:16px;height:16px;border-width:2px;"></div>
+            경로 로딩 중...
+        </div>
+        <div id="chart-explore-aa" style="width:100%;"></div>
+        <div id="chart-explore-vit" style="width:100%; margin-top:16px;"></div>
+    </div>
+</div>
+
+<script>
+const form      = document.getElementById('kegg-form');
+const statusEl  = document.getElementById('status');
+const errBox    = document.getElementById('error-box');
+const errText   = document.getElementById('error-text');
+const results   = document.getElementById('results');
+const btn       = document.getElementById('submit-btn');
+
+const plotlyTheme = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor:  'rgba(0,0,0,0)',
+    font: { family: 'Inter, sans-serif', color: '#e2e8f0' },
+};
+const plotlyConfig = { displayModeBar: false, responsive: true };
+
+let currentStrainId = null;
+
+function renderPlotly(divId, chartJson) {
+    const layout = Object.assign({}, chartJson.layout || {}, plotlyTheme, {
+        xaxis: Object.assign({}, chartJson.layout?.xaxis || {}, { gridcolor: 'rgba(148,163,184,0.1)' }),
+        yaxis: Object.assign({}, chartJson.layout?.yaxis || {}, { gridcolor: 'rgba(148,163,184,0.1)' }),
+    });
+    Plotly.newPlot(divId, chartJson.data, layout, plotlyConfig);
+}
+
+form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errBox.classList.add('hidden');
+    results.classList.add('hidden');
+    statusEl.classList.remove('hidden');
+    btn.disabled = true;
+
+    currentStrainId = parseInt(form.strain_id.value, 10);
+
+    try {
+        const resp = await fetch('/api/kegg/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ strain_id: currentStrainId }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'analyze failed');
+        render(data);
+    } catch (err) {
+        errText.textContent = '오류: ' + err.message;
+        errBox.classList.remove('hidden');
+    } finally {
+        statusEl.classList.add('hidden');
+        btn.disabled = false;
+    }
+});
+
+function render(data) {
+    // Source info
+    const srcLabels = {
+        kegg_api:          '🟢 KEGG REST API (실제 KO annotation)',
+        gcf_annotation:    '🟢 GCF Genome Annotation',
+        taxonomy_fallback: '🟡 Taxonomy Prior (문헌 기반 추정값)',
+        generic_default:   '🔴 Generic Default (기본값)',
+    };
+    const srcLabel = srcLabels[data.source] || `⚪ ${data.source}`;
+    let info = `<span class="font-semibold">데이터 출처:</span> ${srcLabel}`;
+    if (data.ko_count) info += `  |  <span class="font-semibold">KO 수:</span> ${data.ko_count}`;
+    if (data.org_code) info += `  |  <span class="font-semibold">KEGG organism:</span> <code>${data.org_code}</code>`;
+    if (data.source === 'taxonomy_fallback') {
+        info += `<br><span class="text-xs" style="color: var(--text-dim);">💡 균주 브라우저에서 'KEGG KO 분석'을 실행하면 실제 효소 데이터로 업그레이드됩니다.</span>`;
+    }
+    document.getElementById('source-info').innerHTML = `<div class="text-sm">${info}</div>`;
+
+    // Main charts
+    renderPlotly('chart-overview', data.overview);
+    renderPlotly('chart-aa', data.aa_chart);
+    renderPlotly('chart-vit', data.vit_chart);
+
+    // Deficient AA flowcharts
+    const aaFcSection = document.getElementById('aa-flowcharts-section');
+    const aaFcDiv     = document.getElementById('aa-flowcharts');
+    const aaFc = data.deficient_aa_flowcharts || {};
+    if (Object.keys(aaFc).length > 0) {
+        aaFcDiv.innerHTML = '';
+        for (const [aa, chart] of Object.entries(aaFc)) {
+            const id = `fc-aa-${aa}`;
+            aaFcDiv.innerHTML += `<div class="glass-elev p-4"><h3 class="text-sm font-semibold mb-2">${aa}</h3><div id="${id}" style="width:100%;min-height:300px;"></div></div>`;
+        }
+        aaFcSection.classList.remove('hidden');
+        // Render after DOM insert
+        for (const [aa, chart] of Object.entries(aaFc)) {
+            renderPlotly(`fc-aa-${aa}`, chart);
+        }
+    } else {
+        aaFcSection.classList.add('hidden');
+    }
+
+    // Deficient Vitamin flowcharts
+    const vitFcSection = document.getElementById('vit-flowcharts-section');
+    const vitFcDiv     = document.getElementById('vit-flowcharts');
+    const vitFc = data.deficient_vit_flowcharts || {};
+    if (Object.keys(vitFc).length > 0) {
+        vitFcDiv.innerHTML = '';
+        for (const [vit, chart] of Object.entries(vitFc)) {
+            const id = `fc-vit-${vit}`;
+            vitFcDiv.innerHTML += `<div class="glass-elev p-4"><h3 class="text-sm font-semibold mb-2">${vit}</h3><div id="${id}" style="width:100%;min-height:300px;"></div></div>`;
+        }
+        vitFcSection.classList.remove('hidden');
+        for (const [vit, chart] of Object.entries(vitFc)) {
+            renderPlotly(`fc-vit-${vit}`, chart);
+        }
+    } else {
+        vitFcSection.classList.add('hidden');
+    }
+
+    // Populate explorer dropdowns
+    const aaSelect = document.getElementById('explore-aa');
+    aaSelect.innerHTML = '<option value="">(선택)</option>';
+    (data.all_aa || []).forEach(aa => {
+        aaSelect.innerHTML += `<option value="${aa}">${aa}</option>`;
+    });
+
+    const vitSelect = document.getElementById('explore-vit');
+    vitSelect.innerHTML = '<option value="">(선택 안 함)</option>';
+    (data.all_vit || []).forEach(vit => {
+        vitSelect.innerHTML += `<option value="${vit}">${vit}</option>`;
+    });
+
+    results.classList.remove('hidden');
+}
+
+// Explorer: fetch individual pathway detail
+async function fetchPathwayDetail(pathway, pathwaySource, divId) {
+    const loadingEl = document.getElementById('explore-loading');
+    loadingEl.classList.remove('hidden');
+    document.getElementById(divId).innerHTML = '';
+
+    try {
+        const resp = await fetch('/api/kegg/pathway-detail', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                strain_id: currentStrainId,
+                pathway: pathway,
+                pathway_source: pathwaySource,
+            }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'detail failed');
+        renderPlotly(divId, data.chart);
+    } catch (err) {
+        document.getElementById(divId).innerHTML =
+            `<div class="text-sm text-red-300 p-3">경로를 표시할 수 없습니다: ${err.message}</div>`;
+    } finally {
+        loadingEl.classList.add('hidden');
+    }
+}
+
+document.getElementById('explore-aa').addEventListener('change', (e) => {
+    if (e.target.value && currentStrainId) {
+        fetchPathwayDetail(e.target.value, 'aa', 'chart-explore-aa');
+    }
+});
+
+document.getElementById('explore-vit').addEventListener('change', (e) => {
+    if (e.target.value && currentStrainId) {
+        fetchPathwayDetail(e.target.value, 'vitamin', 'chart-explore-vit');
+    }
+});
+</script>
+{% endblock %}
