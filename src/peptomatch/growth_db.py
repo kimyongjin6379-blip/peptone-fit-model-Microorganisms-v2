@@ -34,7 +34,7 @@ PEPTONE_ALIASES = {
     "N": "SOY-N+",
     "L": "SOY-L",
     "B": "SOY-B",
-    "SP": "SOY-SP",
+    "SP": "SOY-P",
     "W": "WHEAT-1",
     "R": "RICE-1",
     "P": "PEA-1",
