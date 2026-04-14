@@ -44,7 +44,7 @@
     <!-- Overview heatmap -->
     <div class="glass p-6">
         <h2 class="text-lg font-semibold mb-3">경로 종합 Overview</h2>
-        <div id="chart-overview" style="width:100%; min-height:400px;"></div>
+        <div id="chart-overview" style="width:100%; min-height:320px;"></div>
     </div>
 
     <!-- AA biosynthesis -->
@@ -122,10 +122,39 @@ const plotlyConfig = { displayModeBar: false, responsive: true };
 let currentStrainId = null;
 
 function renderPlotly(divId, chartJson) {
-    const layout = Object.assign({}, chartJson.layout || {}, plotlyTheme, {
-        xaxis: Object.assign({}, chartJson.layout?.xaxis || {}, { gridcolor: 'rgba(148,163,184,0.1)' }),
-        yaxis: Object.assign({}, chartJson.layout?.yaxis || {}, { gridcolor: 'rgba(148,163,184,0.1)' }),
+    const origLayout = chartJson.layout || {};
+    const layout = Object.assign({}, origLayout, plotlyTheme);
+    // Merge axis settings without overwriting originals
+    layout.xaxis = Object.assign({}, origLayout.xaxis || {}, {
+        gridcolor: 'rgba(148,163,184,0.1)',
+        tickfont: Object.assign({ color: '#e2e8f0' }, origLayout.xaxis?.tickfont || {}),
     });
+    layout.yaxis = Object.assign({}, origLayout.yaxis || {}, {
+        gridcolor: 'rgba(148,163,184,0.1)',
+        tickfont: Object.assign({ color: '#e2e8f0' }, origLayout.yaxis?.tickfont || {}),
+        automargin: true,
+    });
+    // Preserve annotations with readable font color
+    if (origLayout.annotations) {
+        layout.annotations = origLayout.annotations.map(a => ({
+            ...a,
+            font: { ...a.font, color: a.font?.color || '#e2e8f0' },
+        }));
+    }
+    // Colorbar text color
+    if (chartJson.data) {
+        chartJson.data.forEach(trace => {
+            if (trace.colorbar) {
+                trace.colorbar.tickfont = { color: '#e2e8f0' };
+                trace.colorbar.title = trace.colorbar.title || {};
+                if (typeof trace.colorbar.title === 'string') {
+                    trace.colorbar.title = { text: trace.colorbar.title, font: { color: '#e2e8f0' } };
+                } else {
+                    trace.colorbar.title.font = { color: '#e2e8f0' };
+                }
+            }
+        });
+    }
     Plotly.newPlot(divId, chartJson.data, layout, plotlyConfig);
 }
 

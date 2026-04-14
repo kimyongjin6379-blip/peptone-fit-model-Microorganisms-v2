@@ -476,9 +476,10 @@ class KEGGVisualizer:
             colorbar_title="완성도",
             text=[text_row],
             texttemplate="%{text}",
+            textfont=dict(size=9),
             hovertemplate="<b>%{x}</b>: %{text}<extra></extra>",
-            xgap=1,
-            ygap=1,
+            xgap=2,
+            ygap=2,
         ))
 
         # Add group separator annotations
@@ -488,23 +489,28 @@ class KEGGVisualizer:
 
         fig.update_layout(
             title=f"생합성 경로 종합 — {label}",
-            height=240,
+            height=300,
             xaxis=dict(
                 title="",
                 tickangle=-45,
+                tickfont=dict(size=11),
                 side="bottom",
             ),
+            yaxis=dict(
+                tickfont=dict(size=10),
+                automargin=True,
+            ),
             annotations=[
-                dict(x=n_ess / 2 - 0.5, y=1.15, text="<b>Essential AA</b>",
-                     showarrow=False, xref="x", yref="paper", font=dict(size=10)),
-                dict(x=n_ess + n_noness / 2 - 0.5, y=1.15, text="<b>Non-essential AA</b>",
-                     showarrow=False, xref="x", yref="paper", font=dict(size=10)),
-                dict(x=n_ess + n_noness + 1 + n_vit / 2 - 0.5, y=1.15, text="<b>Vitamin</b>",
-                     showarrow=False, xref="x", yref="paper", font=dict(size=10)),
-                dict(x=n_ess + n_noness + 1 + n_vit + 1 + 0.5, y=1.15, text="<b>Other</b>",
-                     showarrow=False, xref="x", yref="paper", font=dict(size=10)),
+                dict(x=n_ess / 2 - 0.5, y=1.18, text="<b>Essential AA</b>",
+                     showarrow=False, xref="x", yref="paper", font=dict(size=11)),
+                dict(x=n_ess + n_noness / 2 - 0.5, y=1.18, text="<b>Non-essential AA</b>",
+                     showarrow=False, xref="x", yref="paper", font=dict(size=11)),
+                dict(x=n_ess + n_noness + 1 + n_vit / 2 - 0.5, y=1.18, text="<b>Vitamin</b>",
+                     showarrow=False, xref="x", yref="paper", font=dict(size=11)),
+                dict(x=n_ess + n_noness + 1 + n_vit + 1 + 0.5, y=1.18, text="<b>Other</b>",
+                     showarrow=False, xref="x", yref="paper", font=dict(size=11)),
             ],
-            margin=dict(t=80, b=10),
+            margin=dict(t=90, b=20, l=20, r=20),
         )
         return fig
 
