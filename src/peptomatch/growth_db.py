@@ -38,6 +38,7 @@ PEPTONE_ALIASES = {
     "W": "WHEAT-1",
     "R": "RICE-1",
     "P": "PEA-1",
+    "PP": "PPR Type4",
 }
 
 # ── Schema ──────────────────────────────────────────────────────
@@ -51,7 +52,11 @@ CREATE TABLE IF NOT EXISTS experiments (
     goal TEXT,
     source_filename TEXT,
     processed_at TEXT,
-    notes TEXT
+    notes TEXT,
+    base_medium_preset TEXT,
+    base_medium_custom_name TEXT,
+    base_medium_composition_json TEXT,
+    composition_groups_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS growth_curves (
@@ -69,6 +74,11 @@ CREATE TABLE IF NOT EXISTS growth_curves (
     mean_od_json TEXT,
     sd_od_json TEXT,
     n_replicates INTEGER,
+    condition_name TEXT,
+    variation_desc TEXT,
+    variation_overrides_json TEXT,
+    composition_json TEXT,
+    composition_group_id TEXT,
     FOREIGN KEY (experiment_id) REFERENCES experiments(id)
 );
 
@@ -136,7 +146,34 @@ class GrowthDB:
         """Create tables and seed alias data."""
         self.conn.executescript(CREATE_TABLES_SQL)
         self.conn.commit()
+        self._migrate_schema()
         self._seed_aliases()
+
+    def _migrate_schema(self):
+        """Add new columns to existing tables if missing (idempotent)."""
+        migrations = [
+            ("experiments", "base_medium_preset", "TEXT"),
+            ("experiments", "base_medium_custom_name", "TEXT"),
+            ("experiments", "base_medium_composition_json", "TEXT"),
+            ("experiments", "composition_groups_json", "TEXT"),
+            ("growth_curves", "condition_name", "TEXT"),
+            ("growth_curves", "variation_desc", "TEXT"),
+            ("growth_curves", "variation_overrides_json", "TEXT"),
+            ("growth_curves", "composition_json", "TEXT"),
+            ("growth_curves", "composition_group_id", "TEXT"),
+        ]
+        for table, column, coltype in migrations:
+            cur = self.conn.execute(f"PRAGMA table_info({table})")
+            existing = [row["name"] for row in cur.fetchall()]
+            if column not in existing:
+                try:
+                    self.conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"
+                    )
+                    logger.info(f"Migrated: added {table}.{column}")
+                except sqlite3.OperationalError as e:
+                    logger.warning(f"Migration skipped for {table}.{column}: {e}")
+        self.conn.commit()
 
     def _seed_aliases(self):
         """Insert default aliases if not already present."""
@@ -169,48 +206,77 @@ class GrowthDB:
     def ingest(self, payload: dict) -> dict:
         """Ingest growth data from growth-curve-app POST payload.
 
-        Expected payload:
-        {
-            "metadata": {"experiment_date", "goal", "strain", "media_type"},
-            "sample_map": [{"code", "strain", "name", "peptone_pct", "peptone_1", "ratio_1", ...}],
-            "chart_data": {"time_hours": [...], "series": [{"name", "mean", "sd"}, ...]},
-            "source_filename": "..."
-        }
+        Supports three flavors:
+        1) Peptone screening (legacy):
+           {metadata, sample_map, chart_data, source_filename}
+        2) Media optimization (legacy, per-SM variation overrides):
+           {metadata, experiment_type:"media_optimization",
+            base_medium: {preset, composition},
+            variations: [{code, strain, description, overrides}],
+            chart_data, source_filename}
+        3) Media optimization (v2, composition_groups):
+           {metadata, experiment_type:"media_optimization",
+            base_medium: {preset, custom_name, composition},
+            composition_groups: [{id, name, strain, description,
+                                  composition:[{name,value,unit,category}],
+                                  applied_samples:["SM1","SM2",...]}],
+            variations: [...],  # server-side expanded from composition_groups
+            chart_data, source_filename}
 
         Returns dict with experiment_id and curve_count.
         """
         metadata = payload.get("metadata", {})
-        sample_map = payload.get("sample_map", [])
+        sample_map = payload.get("sample_map", []) or []
         chart_data = payload.get("chart_data", {})
         source_filename = payload.get("source_filename", "unknown")
+        experiment_type = payload.get("experiment_type") or metadata.get("media_type") or "peptone_screening"
+        base_medium = payload.get("base_medium") or {}
+        variations = payload.get("variations") or []
+        composition_groups = payload.get("composition_groups") or []
 
         # Resolve strain alias
         raw_strain = metadata.get("strain", "")
         resolved_strain = _resolve_strain(raw_strain)
 
-        # Insert experiment
+        # Insert experiment (with optional base_medium fields)
         now = datetime.now().isoformat()
+        base_preset = base_medium.get("preset") if base_medium else None
+        base_custom_name = (base_medium.get("custom_name") or "").strip() if base_medium else ""
+        base_comp_json = json.dumps(base_medium.get("composition", [])) if base_medium else None
+        comp_groups_json = json.dumps(composition_groups) if composition_groups else None
         cur = self.conn.execute(
             """INSERT INTO experiments
-               (experiment_date, strain_name, media_type, goal, source_filename, processed_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (experiment_date, strain_name, media_type, goal, source_filename, processed_at,
+                base_medium_preset, base_medium_custom_name, base_medium_composition_json,
+                composition_groups_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 metadata.get("experiment_date", ""),
                 resolved_strain,
-                metadata.get("media_type", "peptone_screening"),
+                experiment_type,
                 metadata.get("goal", ""),
                 source_filename,
                 now,
+                base_preset,
+                base_custom_name or None,
+                base_comp_json,
+                comp_groups_json,
             ),
         )
         experiment_id = cur.lastrowid
 
-        # Build sample_map lookup: group_code -> sample info
+        # Build lookup by group_code for BOTH sample_map (legacy) and variations (media opt)
         sample_lookup = {}
         for entry in sample_map:
             code = entry.get("code", "")
             if code:
                 sample_lookup[code] = entry
+
+        variation_lookup = {}
+        for var in variations:
+            code = var.get("code", "")
+            if code:
+                variation_lookup[code] = var
 
         # Insert growth curves from chart_data series
         time_hours = chart_data.get("time_hours", [])
@@ -231,17 +297,18 @@ class GrowthDB:
                 # Legacy fallback: best-effort parse from name
                 group_code = group_name.split(" ")[0].split("-")[0]
 
-            # Look up sample info
+            # Look up sample info + variation info
             sample_info = sample_lookup.get(group_code, {})
+            variation_info = variation_lookup.get(group_code, {})
 
-            # Resolve peptone aliases
+            # Resolve peptone aliases (peptone screening path)
             raw_peptone1 = sample_info.get("peptone_1", "") or sample_info.get("name", "")
             raw_peptone2 = sample_info.get("peptone_2", "")
             peptone_1 = _resolve_peptone(raw_peptone1) if raw_peptone1 else ""
             peptone_2 = _resolve_peptone(raw_peptone2) if raw_peptone2 else ""
 
-            # Strain per curve (may override experiment-level strain)
-            curve_strain = sample_info.get("strain", "")
+            # Strain per curve (variation strain > sample_map strain > experiment strain)
+            curve_strain = variation_info.get("strain", "") or sample_info.get("strain", "")
             if curve_strain:
                 curve_strain = _resolve_strain(curve_strain)
             else:
@@ -255,12 +322,35 @@ class GrowthDB:
             else:
                 peptone_name = peptone_1
 
+            # Variation fields (media_optimization path)
+            condition_name = (variation_info.get("condition_name") or "").strip() or None
+            variation_desc = variation_info.get("description", "") or ""
+            variation_overrides = variation_info.get("overrides", {}) or {}
+            variation_overrides_json = json.dumps(variation_overrides) if variation_overrides else None
+
+            # Full per-SM composition (v2 composition_groups flow).
+            # Prefer variation.composition; fall back to chart_data series.composition
+            # (growth-curve-app now enriches each series with its composition).
+            composition_list = (
+                variation_info.get("composition")
+                or series.get("composition")
+                or []
+            )
+            composition_json = json.dumps(composition_list) if composition_list else None
+            composition_group_id = (
+                variation_info.get("group_id")
+                or series.get("group_id")
+                or None
+            )
+
             self.conn.execute(
                 """INSERT INTO growth_curves
                    (experiment_id, group_code, peptone_name, peptone_pct,
                     peptone_1, ratio_1, peptone_2, ratio_2, strain_name,
-                    time_hours_json, mean_od_json, sd_od_json, n_replicates)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    time_hours_json, mean_od_json, sd_od_json, n_replicates,
+                    condition_name, variation_desc, variation_overrides_json,
+                    composition_json, composition_group_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     experiment_id,
                     group_code,
@@ -275,6 +365,11 @@ class GrowthDB:
                     json.dumps(mean_values),
                     json.dumps(sd_values),
                     sample_info.get("n_replicates", 3),
+                    condition_name,
+                    variation_desc,
+                    variation_overrides_json,
+                    composition_json,
+                    composition_group_id,
                 ),
             )
             curve_count += 1

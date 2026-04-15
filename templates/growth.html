@@ -107,27 +107,41 @@
         <h2 class="text-lg font-semibold">성장 곡선</h2>
         <span class="text-xs" style="color: var(--text-dim);" id="curve-exp-label"></span>
     </div>
+    <div id="base-medium-info" class="hidden mb-3 p-3 rounded-lg" style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25);">
+        <div class="text-xs mb-2" style="color: var(--text-dim);">
+            <span class="font-semibold" style="color: var(--text);">Base Medium</span>
+            <span id="base-medium-preset-label"></span>
+        </div>
+        <div id="base-medium-composition" class="flex flex-wrap gap-2 text-xs"></div>
+    </div>
+    <div id="comp-groups-info" class="hidden mb-3">
+        <div class="text-xs mb-2 font-semibold" style="color: var(--text);">조성 그룹 매핑</div>
+        <div id="comp-groups-list" class="grid grid-cols-1 md:grid-cols-2 gap-2"></div>
+    </div>
     <div id="curve-chart" style="width: 100%; height: 420px;"></div>
     <div class="mt-4 overflow-x-auto">
-        <table>
-            <thead>
-                <tr>
-                    <th>샘플</th>
-                    <th>펩톤</th>
-                    <th>%</th>
-                    <th>Max OD</th>
-                    <th>μmax (h⁻¹)</th>
-                    <th>Doubling (h)</th>
-                    <th>Lag (h)</th>
-                    <th>AUC</th>
-                </tr>
-            </thead>
+        <table id="curve-table">
+            <thead id="curve-thead"></thead>
             <tbody id="curve-tbody"></tbody>
         </table>
     </div>
 </div>
 
 <script>
+// Cache experiments by id for base_medium lookup
+const EXPERIMENTS_BY_ID = {};
+{% for e in experiments %}
+EXPERIMENTS_BY_ID[{{ e.id }}] = {
+    id: {{ e.id }},
+    media_type: {{ (e.media_type or '') | tojson }},
+    base_medium_preset: {{ (e.base_medium_preset or '') | tojson }},
+    base_medium_custom_name: {{ (e.base_medium_custom_name or '') | tojson }},
+    base_medium_composition_json: {{ (e.base_medium_composition_json or '') | tojson }},
+    composition_groups_json: {{ (e.composition_groups_json or '') | tojson }},
+    strain_name: {{ (e.strain_name or '') | tojson }}
+};
+{% endfor %}
+
 document.querySelectorAll('.view-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
         const expId = btn.dataset.id;
@@ -200,21 +214,135 @@ if (resetBtn) {
     });
 }
 
+function escapeHtml(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function renderCurves(expId, curves) {
     const panel = document.getElementById('curve-panel');
     panel.classList.remove('hidden');
     panel.scrollIntoView({behavior: 'smooth', block: 'start'});
-    document.getElementById('curve-exp-label').textContent = `실험 #${expId} · ${curves.length}개 샘플`;
 
+    const exp = EXPERIMENTS_BY_ID[expId] || {};
+    const isMediaOpt = (exp.media_type === 'media_optimization') ||
+                       curves.some(c => c.variation_desc || c.variation_overrides_json || c.composition_json);
+
+    document.getElementById('curve-exp-label').textContent =
+        `실험 #${expId} · ${curves.length}개 샘플` +
+        (isMediaOpt ? ' · 배지 최적화' : '');
+
+    // ── Base Medium info (media_optimization only) ──
+    let baseComp = [];
+    try { baseComp = JSON.parse(exp.base_medium_composition_json || '[]'); } catch {}
+    const baseDefined = baseComp.length > 0;
+    // Base composition as a lookup for diffing (name → {value, unit})
+    const baseMap = {};
+    baseComp.forEach(c => { baseMap[(c.name || '').trim()] = c; });
+
+    const baseInfo = document.getElementById('base-medium-info');
+    if (isMediaOpt && (exp.base_medium_preset || baseDefined)) {
+        baseInfo.classList.remove('hidden');
+        // Compose display label: "MRS" / "사용자 정의 배지 — Min-1" / "(Base 없음)"
+        let presetLabel = exp.base_medium_preset || '(없음)';
+        if (exp.base_medium_preset === 'CUSTOM') {
+            presetLabel = exp.base_medium_custom_name
+                ? `사용자 정의 배지 — ${exp.base_medium_custom_name}`
+                : '사용자 정의 배지';
+        } else if (exp.base_medium_preset === 'NONE') {
+            presetLabel = '(Base 없음 — 각 조성 그룹 독립 정의)';
+        }
+        document.getElementById('base-medium-preset-label').textContent = ' : ' + presetLabel;
+        const compDiv = document.getElementById('base-medium-composition');
+        if (!baseDefined) {
+            compDiv.innerHTML = '<span style="color:var(--text-dim);">(조성 없음 — 각 실험군 조성 참조)</span>';
+        } else {
+            compDiv.innerHTML = baseComp.map(c =>
+                `<span class="px-2 py-1 rounded" style="background: rgba(148,163,184,0.1); border: 1px solid rgba(148,163,184,0.15);">${escapeHtml(c.name)} <span style="color:var(--text-dim);">${escapeHtml(String(c.value))} ${escapeHtml(c.unit || '')}</span></span>`
+            ).join('');
+        }
+    } else {
+        baseInfo.classList.add('hidden');
+    }
+
+    // ── Composition Groups (v2) ──
+    let compGroups = [];
+    try { compGroups = JSON.parse(exp.composition_groups_json || '[]'); } catch {}
+    const cgInfo = document.getElementById('comp-groups-info');
+    const cgList = document.getElementById('comp-groups-list');
+    if (isMediaOpt && compGroups.length > 0) {
+        cgInfo.classList.remove('hidden');
+        cgList.innerHTML = compGroups.map((g, idx) => {
+            const applied = (g.applied_samples || []).map(sm =>
+                `<span class="px-1.5 py-0.5 rounded mr-1" style="background:rgba(99,102,241,0.22); color:#c7d2fe; font-size:10.5px; font-weight:600;">${escapeHtml(sm)}</span>`
+            ).join('') || '<span style="color:var(--text-dim); font-size:11px;">(매핑 없음)</span>';
+            const comp = (g.composition || []).map(c => {
+                // Diff vs Base (if base defined)
+                const baseC = baseMap[(c.name || '').trim()];
+                let cls = 'bg-slate';
+                let note = '';
+                if (baseDefined) {
+                    if (!baseC) { cls = 'added';  note = ' ◆추가'; }
+                    else if (parseFloat(baseC.value) !== parseFloat(c.value)) {
+                        cls = 'changed'; note = ` ◆${baseC.value}→${c.value}`;
+                    }
+                }
+                const bg = cls === 'added'   ? 'rgba(34,197,94,0.18); border:1px solid rgba(34,197,94,0.4);'
+                         : cls === 'changed' ? 'rgba(234,179,8,0.20); border:1px solid rgba(234,179,8,0.45);'
+                         : 'rgba(148,163,184,0.1); border:1px solid rgba(148,163,184,0.15);';
+                return `<span class="px-1.5 py-0.5 rounded mr-1" style="background:${bg} font-size:11px;">${escapeHtml(c.name)} <span style="color:var(--text-dim);">${escapeHtml(String(c.value))} ${escapeHtml(c.unit || '')}</span>${note ? `<span style="color:#fcd34d; font-size:10px;">${note}</span>` : ''}</span>`;
+            }).join('');
+            // Check for removed base components (present in baseMap but not in g.composition)
+            let removed = '';
+            if (baseDefined) {
+                const gNames = new Set((g.composition || []).map(c => (c.name || '').trim()));
+                const removedItems = baseComp.filter(bc => !gNames.has((bc.name || '').trim()));
+                if (removedItems.length) {
+                    removed = removedItems.map(rc =>
+                        `<span class="px-1.5 py-0.5 rounded mr-1" style="background:rgba(239,68,68,0.18); border:1px solid rgba(239,68,68,0.4); font-size:11px; text-decoration:line-through; color:#fca5a5;">${escapeHtml(rc.name)} <span style="color:var(--text-dim);">${escapeHtml(String(rc.value))} ${escapeHtml(rc.unit || '')}</span></span>`
+                    ).join('');
+                }
+            }
+            return `
+                <div class="p-3 rounded-lg" style="background: rgba(148,163,184,0.05); border:1px solid rgba(148,163,184,0.18);">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <div class="font-semibold text-sm">${idx+1}. ${escapeHtml(g.name || '(이름 없음)')}</div>
+                        <span class="text-xs" style="color:var(--text-dim);">${escapeHtml(g.strain || '-')}</span>
+                    </div>
+                    ${g.description ? `<div class="text-xs mb-1.5" style="color:var(--text-dim);">${escapeHtml(g.description)}</div>` : ''}
+                    <div class="mb-1.5">${applied}</div>
+                    <div class="text-xs">${comp}${removed}</div>
+                </div>`;
+        }).join('');
+    } else {
+        cgInfo.classList.add('hidden');
+    }
+
+    // ── Chart traces ──
     const traces = curves.map(c => {
         let t = [], y = [], sd = [];
         try { t  = JSON.parse(c.time_hours_json || '[]'); } catch {}
         try { y  = JSON.parse(c.mean_od_json    || '[]'); } catch {}
         try { sd = JSON.parse(c.sd_od_json      || '[]'); } catch {}
+        // Trace name: media_opt uses condition_name > variation_desc, else peptone_name
+        let traceName;
+        if (isMediaOpt) {
+            const label = c.condition_name || c.variation_desc;
+            traceName = label
+                ? `${c.group_code}: ${label}`
+                : (c.group_code || `#${c.id}`);
+        } else {
+            traceName = c.peptone_name || c.group_code || `#${c.id}`;
+        }
         return {
             type: 'scatter',
             mode: 'lines+markers',
-            name: c.peptone_name || c.group_code || `#${c.id}`,
+            name: traceName,
             x: t,
             y: y,
             error_y: sd.length ? { type: 'data', array: sd, visible: true, thickness: 1 } : undefined,
@@ -233,19 +361,100 @@ function renderCurves(expId, curves) {
         legend: { bgcolor: 'rgba(0,0,0,0)', orientation: 'h', y: -0.15 },
     }, {displayModeBar: false, responsive: true});
 
+    // ── Table header (differs by experiment type) ──
+    const thead = document.getElementById('curve-thead');
     const tbody = document.getElementById('curve-tbody');
-    tbody.innerHTML = curves.map(c => `
-        <tr>
-            <td>${c.group_code || '-'}</td>
-            <td>${c.peptone_name || '-'}</td>
-            <td>${c.peptone_pct ?? '-'}</td>
-            <td>${c.max_od != null ? (+c.max_od).toFixed(3) : '-'}</td>
-            <td>${c.mu_max != null ? (+c.mu_max).toFixed(3) : '-'}</td>
-            <td>${c.doubling_time_h != null ? (+c.doubling_time_h).toFixed(2) : '-'}</td>
-            <td>${c.lag_time_h != null ? (+c.lag_time_h).toFixed(2) : '-'}</td>
-            <td>${c.auc != null ? (+c.auc).toFixed(2) : '-'}</td>
-        </tr>
-    `).join('');
+
+    if (isMediaOpt) {
+        const compHeader = baseDefined ? 'Base 대비 차이' : '조성 요약';
+        thead.innerHTML = `
+            <tr>
+                <th>샘플</th>
+                <th>균주</th>
+                <th>실험군</th>
+                <th>변형 설명</th>
+                <th>${compHeader}</th>
+                <th>Max OD</th>
+                <th>μmax (h⁻¹)</th>
+                <th>Doubling (h)</th>
+                <th>AUC</th>
+            </tr>`;
+        tbody.innerHTML = curves.map(c => {
+            // v2: full per-SM composition (composition_json)
+            let comp = [];
+            try { comp = JSON.parse(c.composition_json || '[]'); } catch {}
+
+            // Legacy: variation_overrides_json (display as override badges)
+            let overrides = {};
+            try { overrides = JSON.parse(c.variation_overrides_json || '{}'); } catch {}
+
+            let compCell;
+            if (comp.length > 0) {
+                if (baseDefined) {
+                    // diff vs Base: added / changed / removed
+                    const diffs = [];
+                    const gNames = new Set(comp.map(x => (x.name || '').trim()));
+                    comp.forEach(x => {
+                        const b = baseMap[(x.name || '').trim()];
+                        if (!b) diffs.push(`<span class="px-1.5 py-0.5 rounded mr-1" style="background:rgba(34,197,94,0.18); border:1px solid rgba(34,197,94,0.4); font-size:11px;">+${escapeHtml(x.name)} ${escapeHtml(String(x.value))}${escapeHtml(x.unit || '')}</span>`);
+                        else if (parseFloat(b.value) !== parseFloat(x.value))
+                            diffs.push(`<span class="px-1.5 py-0.5 rounded mr-1" style="background:rgba(234,179,8,0.20); border:1px solid rgba(234,179,8,0.45); font-size:11px;">${escapeHtml(x.name)} ${escapeHtml(String(b.value))}→${escapeHtml(String(x.value))}${escapeHtml(x.unit || '')}</span>`);
+                    });
+                    baseComp.forEach(bc => {
+                        if (!gNames.has((bc.name || '').trim()))
+                            diffs.push(`<span class="px-1.5 py-0.5 rounded mr-1" style="background:rgba(239,68,68,0.18); border:1px solid rgba(239,68,68,0.4); font-size:11px; text-decoration:line-through; color:#fca5a5;">${escapeHtml(bc.name)}</span>`);
+                    });
+                    compCell = diffs.length ? diffs.join('') : '<span style="color:var(--text-dim); font-size:11px;">(Base 동일)</span>';
+                } else {
+                    // Standalone summary
+                    compCell = `<span style="color:var(--text-dim); font-size:11px;">${comp.length}개 성분</span>`;
+                }
+            } else if (Object.keys(overrides).length) {
+                compCell = Object.entries(overrides).map(
+                    ([k, v]) => `<span class="px-1.5 py-0.5 rounded mr-1" style="background:rgba(99,102,241,0.18); font-size:11px;">${escapeHtml(k)}=${escapeHtml(String(v.value))}${escapeHtml(v.unit || '')}</span>`
+                ).join('');
+            } else {
+                compCell = '<span style="color:var(--text-dim);">-</span>';
+            }
+
+            return `
+                <tr>
+                    <td class="font-semibold">${escapeHtml(c.group_code || '-')}</td>
+                    <td>${escapeHtml(c.strain_name || '-')}</td>
+                    <td class="font-semibold" style="color:#c7d2fe;">${escapeHtml(c.condition_name || '-')}</td>
+                    <td>${escapeHtml(c.variation_desc || '-')}</td>
+                    <td>${compCell}</td>
+                    <td>${c.max_od != null ? (+c.max_od).toFixed(3) : '-'}</td>
+                    <td>${c.mu_max != null ? (+c.mu_max).toFixed(3) : '-'}</td>
+                    <td>${c.doubling_time_h != null ? (+c.doubling_time_h).toFixed(2) : '-'}</td>
+                    <td>${c.auc != null ? (+c.auc).toFixed(2) : '-'}</td>
+                </tr>`;
+        }).join('');
+    } else {
+        thead.innerHTML = `
+            <tr>
+                <th>샘플</th>
+                <th>펩톤</th>
+                <th>%</th>
+                <th>Max OD</th>
+                <th>μmax (h⁻¹)</th>
+                <th>Doubling (h)</th>
+                <th>Lag (h)</th>
+                <th>AUC</th>
+            </tr>`;
+        tbody.innerHTML = curves.map(c => `
+            <tr>
+                <td>${c.group_code || '-'}</td>
+                <td>${c.peptone_name || '-'}</td>
+                <td>${c.peptone_pct ?? '-'}</td>
+                <td>${c.max_od != null ? (+c.max_od).toFixed(3) : '-'}</td>
+                <td>${c.mu_max != null ? (+c.mu_max).toFixed(3) : '-'}</td>
+                <td>${c.doubling_time_h != null ? (+c.doubling_time_h).toFixed(2) : '-'}</td>
+                <td>${c.lag_time_h != null ? (+c.lag_time_h).toFixed(2) : '-'}</td>
+                <td>${c.auc != null ? (+c.auc).toFixed(2) : '-'}</td>
+            </tr>
+        `).join('');
+    }
 }
 </script>
 {% endblock %}
