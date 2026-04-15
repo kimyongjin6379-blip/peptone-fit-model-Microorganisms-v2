@@ -16,6 +16,7 @@ outputs/
 # IDE
 .vscode/
 .idea/
+.claude/
 
 # Environment
 .env
