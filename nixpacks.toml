@@ -3,7 +3,7 @@
 # Ruby: KofamScan exec_annotation script
 # Python: must be explicit when overriding phases.setup
 [phases.setup]
-nixPkgs = ["python311", "python311Packages.pip", "gcc", "hmmer", "ruby", "wget", "gzip"]
+nixPkgs = ["python311", "python311Packages.pip", "gcc", "hmmer", "ruby", "wget", "gzip", "sqlite"]
 
 [phases.install]
 cmds = [
