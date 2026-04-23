@@ -13,3 +13,6 @@ fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 httpx>=0.25.0
 jinja2>=3.1
+joblib>=1.3
+# FBA stack (Phase 3) — install in WSL/Linux for full functionality
+cobra>=0.29

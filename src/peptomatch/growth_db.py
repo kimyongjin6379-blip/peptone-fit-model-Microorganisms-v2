@@ -27,6 +27,12 @@ STRAIN_ALIASES = {
     "BS": {"genus": "Bacillus", "species": "subtilis"},
     "BC": {"genus": "Bacillus", "species": "coagulans"},
     "EC": {"genus": "Escherichia", "species": "coli"},
+    # ── Tier 1 expansion (2026-04) ──
+    "LRE": {"genus": "Limosilactobacillus", "species": "reuteri"},
+    "LB": {"genus": "Lactobacillus", "species": "delbrueckii subsp. bulgaricus"},
+    "LF": {"genus": "Limosilactobacillus", "species": "fermentum"},
+    "LH": {"genus": "Lactobacillus", "species": "helveticus"},
+    "LG": {"genus": "Lactobacillus", "species": "gasseri"},
 }
 
 PEPTONE_ALIASES = {
@@ -79,6 +85,7 @@ CREATE TABLE IF NOT EXISTS growth_curves (
     variation_overrides_json TEXT,
     composition_json TEXT,
     composition_group_id TEXT,
+    is_control INTEGER DEFAULT 0,
     FOREIGN KEY (experiment_id) REFERENCES experiments(id)
 );
 
@@ -161,6 +168,7 @@ class GrowthDB:
             ("growth_curves", "variation_overrides_json", "TEXT"),
             ("growth_curves", "composition_json", "TEXT"),
             ("growth_curves", "composition_group_id", "TEXT"),
+            ("growth_curves", "is_control", "INTEGER DEFAULT 0"),
         ]
         for table, column, coltype in migrations:
             cur = self.conn.execute(f"PRAGMA table_info({table})")
@@ -314,10 +322,25 @@ class GrowthDB:
             else:
                 curve_strain = resolved_strain
 
+            # Control flag: 1 if this SM row is a positive control (e.g. MRS only)
+            # Alias fallback: a peptone_1 literally spelled "MRS" / "MRS (Control)" is
+            # also treated as a control so older/mis-entered payloads degrade gracefully.
+            is_control_flag = int(bool(sample_info.get("is_control", 0)))
+            if not is_control_flag and raw_peptone1:
+                _pk = raw_peptone1.strip().upper()
+                if _pk in ("MRS", "MRS (CONTROL)", "MRS CONTROL", "CONTROL"):
+                    is_control_flag = 1
+
             # Determine display peptone name
             ratio_1 = sample_info.get("ratio_1", 100)
             ratio_2 = sample_info.get("ratio_2", 0)
-            if peptone_2 and ratio_2:
+            if is_control_flag:
+                peptone_name = "MRS (Control)"
+                peptone_1 = ""
+                peptone_2 = ""
+                ratio_1 = 0
+                ratio_2 = 0
+            elif peptone_2 and ratio_2:
                 peptone_name = f"{peptone_1}_{ratio_1}%+{peptone_2}_{ratio_2}%"
             else:
                 peptone_name = peptone_1
@@ -349,13 +372,13 @@ class GrowthDB:
                     peptone_1, ratio_1, peptone_2, ratio_2, strain_name,
                     time_hours_json, mean_od_json, sd_od_json, n_replicates,
                     condition_name, variation_desc, variation_overrides_json,
-                    composition_json, composition_group_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    composition_json, composition_group_id, is_control)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     experiment_id,
                     group_code,
                     peptone_name,
-                    sample_info.get("peptone_pct", 0),
+                    0 if is_control_flag else sample_info.get("peptone_pct", 0),
                     peptone_1,
                     ratio_1,
                     peptone_2,
@@ -370,6 +393,7 @@ class GrowthDB:
                     variation_overrides_json,
                     composition_json,
                     composition_group_id,
+                    is_control_flag,
                 ),
             )
             curve_count += 1
@@ -498,25 +522,109 @@ class GrowthDB:
         return [dict(r) for r in cur.fetchall()]
 
     def get_ml_training_data(self) -> list[dict]:
-        """Get peptone screening data formatted for ML training."""
+        """Get peptone screening data formatted for ML training.
+
+        Returns rich rows including per-curve composition_json and per-experiment
+        base medium metadata, so downstream feature extraction can see the full
+        medium context (not just peptone name / pct).
+
+        Rows where `is_control = 1` are EXCLUDED — controls are not learning
+        samples; they serve as per-experiment baselines consumed by
+        :meth:`get_control_baselines`.
+        """
         cur = self.conn.execute(
             """SELECT gc.strain_name, gc.peptone_name, gc.peptone_1, gc.ratio_1,
-                      gc.peptone_2, gc.ratio_2, gc.peptone_pct,
-                      gm.max_od, gm.final_od, gm.mu_max, gm.auc, gm.lag_time_h
+                      gc.peptone_2, gc.ratio_2, gc.peptone_pct, gc.is_control,
+                      gc.condition_name, gc.variation_desc,
+                      gc.composition_json, gc.variation_overrides_json,
+                      gc.composition_group_id,
+                      gm.max_od, gm.final_od, gm.mu_max, gm.auc, gm.lag_time_h,
+                      gm.doubling_time_h, gm.t_max_od_h,
+                      e.id AS experiment_id, e.experiment_date, e.notes,
+                      e.base_medium_preset, e.base_medium_custom_name,
+                      e.base_medium_composition_json,
+                      e.composition_groups_json
                FROM growth_curves gc
                JOIN growth_metrics gm ON gm.growth_curve_id = gc.id
                JOIN experiments e ON e.id = gc.experiment_id
                WHERE e.media_type = 'peptone_screening'
+                 AND COALESCE(gc.is_control, 0) = 0
                ORDER BY gc.id"""
         )
         return [dict(r) for r in cur.fetchall()]
 
+    def get_control_baselines(self) -> dict[tuple[int, str], dict]:
+        """Return per-(experiment_id, strain_name) control growth metrics.
+
+        Key: (experiment_id, strain_name) so the same plate can host controls
+        for multiple strains. Value: dict with the 7 growth metrics plus
+        `control_available=1`.
+
+        ML/scoring code consumes this to normalize sample metrics relative to
+        the plate's own MRS baseline — this strips per-experiment, per-strain
+        seasonal/instrument variance that otherwise gets learned as noise.
+        """
+        cur = self.conn.execute(
+            """SELECT gc.experiment_id, gc.strain_name,
+                      gm.max_od, gm.final_od, gm.mu_max, gm.auc,
+                      gm.lag_time_h, gm.doubling_time_h, gm.t_max_od_h
+               FROM growth_curves gc
+               JOIN growth_metrics gm ON gm.growth_curve_id = gc.id
+               WHERE COALESCE(gc.is_control, 0) = 1
+               ORDER BY gc.id"""
+        )
+        baselines: dict[tuple[int, str], dict] = {}
+        for r in cur.fetchall():
+            key = (int(r["experiment_id"]), (r["strain_name"] or "").strip())
+            baselines[key] = {
+                "control_max_od": r["max_od"],
+                "control_final_od": r["final_od"],
+                "control_mu_max": r["mu_max"],
+                "control_auc": r["auc"],
+                "control_lag_time_h": r["lag_time_h"],
+                "control_doubling_time_h": r["doubling_time_h"],
+                "control_t_max_od_h": r["t_max_od_h"],
+                "control_available": 1,
+            }
+        return baselines
+
+    def get_control_for(self, experiment_id: int, strain_name: str) -> Optional[dict]:
+        """Lookup the control baseline for one (experiment, strain) pair.
+
+        Falls back to any control in the same experiment (regardless of strain)
+        if no strain-specific control exists — common when a single MRS row
+        serves as reference for all strains on the same plate.
+        Returns None when no control was recorded.
+        """
+        key = (int(experiment_id), (strain_name or "").strip())
+        all_ctrl = self.get_control_baselines()
+        if key in all_ctrl:
+            return all_ctrl[key]
+        # Fallback: any control in the same experiment
+        for (exp_id, _strain), info in all_ctrl.items():
+            if exp_id == int(experiment_id):
+                return info
+        return None
+
     def get_fba_validation_data(self) -> list[dict]:
-        """Get media optimization data for FBA validation."""
+        """Get media optimization data for FBA validation.
+
+        Returns per-curve composition_json (the actual medium recipe for each
+        sample group) and base-medium metadata so the FBA simulator can
+        translate UI-entered compositions into exchange bounds for comparison
+        against empirical mu_max / max_od.
+        """
         cur = self.conn.execute(
             """SELECT gc.strain_name, gc.peptone_name, gc.group_code,
+                      gc.condition_name, gc.variation_desc, gc.is_control,
+                      gc.composition_json, gc.variation_overrides_json,
+                      gc.composition_group_id,
                       gm.max_od, gm.final_od, gm.mu_max, gm.auc,
-                      e.experiment_date, e.notes
+                      gm.lag_time_h, gm.doubling_time_h, gm.t_max_od_h,
+                      e.id AS experiment_id, e.experiment_date, e.notes,
+                      e.base_medium_preset, e.base_medium_custom_name,
+                      e.base_medium_composition_json,
+                      e.composition_groups_json
                FROM growth_curves gc
                JOIN growth_metrics gm ON gm.growth_curve_id = gc.id
                JOIN experiments e ON e.id = gc.experiment_id

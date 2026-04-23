@@ -829,3 +829,117 @@ class CompositionOnlyRecommender:
         score += supply.get("supply_nucleotide", 0) * 0.4
 
         return score * 20  # Scale to ~0-100
+
+
+# ============================================================================
+# Combined multi-metric scoring (uses MRS control baseline when available)
+# ----------------------------------------------------------------------------
+# This is the "how much better than the MRS control" score shown to the user
+# alongside recommendations. It mixes four growth metrics with fixed weights
+# agreed on 2026-04-23 — the weights can later be tuned from real data.
+# ============================================================================
+
+COMBINED_SCORE_WEIGHTS = {
+    "max_od": 0.40,   # commercial value (final biomass yield)
+    "auc":    0.30,   # process efficiency (lag + growth + persistence)
+    "mu_max": 0.20,   # kinetics (matches FBA predicted μ)
+    "lag":    0.10,   # lag penalty (shorter lag = bonus)
+}
+
+
+def combined_score(
+    sample_metrics: dict,
+    control_metrics: Optional[dict] = None,
+    weights: Optional[dict] = None,
+) -> dict:
+    """Combine 4 growth metrics into a single 0-100 score vs MRS control.
+
+    Parameters
+    ----------
+    sample_metrics : dict
+        {"max_od", "mu_max", "auc", "lag_time_h"} — the peptone sample's
+        measured (or predicted) growth metrics.
+    control_metrics : dict, optional
+        Same keys, but from the same-experiment MRS positive control. When
+        None, only raw metric sanity is returned (score=50.0 neutral).
+    weights : dict, optional
+        Override COMBINED_SCORE_WEIGHTS. Keys: max_od / auc / mu_max / lag.
+
+    Returns
+    -------
+    dict with:
+        score        : 0-100, 50 = equal to control, 70 = ~40% improved
+        components   : per-metric fold/delta and weighted contribution
+        baseline_used: bool — whether control was applied
+    """
+    w = {**COMBINED_SCORE_WEIGHTS, **(weights or {})}
+
+    def _safe(d, k):
+        v = d.get(k) if d else None
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    s_max = _safe(sample_metrics, "max_od")
+    s_auc = _safe(sample_metrics, "auc")
+    s_mu  = _safe(sample_metrics, "mu_max")
+    s_lag = _safe(sample_metrics, "lag_time_h")
+
+    if not control_metrics:
+        return {
+            "score": 50.0,
+            "components": {},
+            "baseline_used": False,
+            "note": "no control baseline — neutral score returned",
+        }
+
+    c_max = _safe(control_metrics, "max_od")
+    c_auc = _safe(control_metrics, "auc")
+    c_mu  = _safe(control_metrics, "mu_max")
+    c_lag = _safe(control_metrics, "lag_time_h")
+
+    components: dict[str, dict] = {}
+    total_delta = 0.0   # accumulated weighted (fold-1) or normalized delta
+
+    def _fold_contrib(sample_v, ctrl_v, weight, label):
+        if sample_v is None or ctrl_v is None or ctrl_v <= 1e-9:
+            return 0.0
+        fold = sample_v / ctrl_v
+        contrib = weight * (fold - 1.0)
+        components[label] = {
+            "sample": round(sample_v, 4),
+            "control": round(ctrl_v, 4),
+            "fold": round(fold, 3),
+            "weight": weight,
+            "contribution": round(contrib, 4),
+        }
+        return contrib
+
+    total_delta += _fold_contrib(s_max, c_max, w["max_od"], "max_od")
+    total_delta += _fold_contrib(s_auc, c_auc, w["auc"],    "auc")
+    total_delta += _fold_contrib(s_mu,  c_mu,  w["mu_max"], "mu_max")
+
+    # Lag penalty: longer lag vs control reduces score. Normalize by control
+    # lag so a 1h delay on a 2h baseline hurts more than on a 6h baseline.
+    if s_lag is not None and c_lag is not None and c_lag > 1e-3:
+        lag_delta_norm = (s_lag - c_lag) / c_lag
+        lag_contrib = -w["lag"] * lag_delta_norm   # minus: longer lag = worse
+        components["lag"] = {
+            "sample": round(s_lag, 2),
+            "control": round(c_lag, 2),
+            "delta_h": round(s_lag - c_lag, 2),
+            "weight": w["lag"],
+            "contribution": round(lag_contrib, 4),
+        }
+        total_delta += lag_contrib
+
+    # Scale: 0 delta (identical to control) → 50. +0.4 → 70. +1.0 → 100 (cap).
+    raw_score = 50.0 + total_delta * 50.0
+    score = max(0.0, min(100.0, raw_score))
+
+    return {
+        "score": round(score, 1),
+        "components": components,
+        "baseline_used": True,
+    }
