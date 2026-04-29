@@ -12,6 +12,10 @@ cmds = [
     "/opt/venv/bin/pip install -r requirements.txt",
     "/opt/venv/bin/pip install -e . || echo 'editable install skipped'",
     "chmod +x scripts/setup_kofamscan.sh start.sh",
+    # Snapshot tracked xlsx files to a non-Volume location so start.sh
+    # can sync them to /app/data on each boot (Volume otherwise shadows
+    # build-time updates with stale copies).
+    "mkdir -p /app/_build_data && cp -rv data /app/_build_data/ 2>/dev/null || true",
 ]
 
 [start]
