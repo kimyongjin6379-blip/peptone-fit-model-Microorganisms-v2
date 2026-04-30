@@ -169,6 +169,9 @@ class GrowthDB:
             ("growth_curves", "composition_json", "TEXT"),
             ("growth_curves", "composition_group_id", "TEXT"),
             ("growth_curves", "is_control", "INTEGER DEFAULT 0"),
+            # Raw 3반복 OD trajectories (ML/DL 학습용; UI는 mean+sd 그대로 사용)
+            # JSON 형태: [{"sample": "SM1_1", "well": "B2", "od": [0.05, 0.06, ...]}, ...]
+            ("growth_curves", "raw_od_replicates_json", "TEXT"),
         ]
         for table, column, coltype in migrations:
             cur = self.conn.execute(f"PRAGMA table_info({table})")
@@ -366,14 +369,27 @@ class GrowthDB:
                 or None
             )
 
+            # Raw replicates (3반복 well별 OD trajectories) — 있을 때만 저장
+            raw_replicates = series.get("replicates")
+            raw_replicates_json = (
+                json.dumps(raw_replicates) if raw_replicates else None
+            )
+            # Replicate 수: raw가 있으면 거기서, 없으면 series 메타에서, 없으면 sample_map에서
+            n_reps = (
+                len(raw_replicates) if raw_replicates
+                else series.get("n_replicates")
+                or sample_info.get("n_replicates", 3)
+            )
+
             self.conn.execute(
                 """INSERT INTO growth_curves
                    (experiment_id, group_code, peptone_name, peptone_pct,
                     peptone_1, ratio_1, peptone_2, ratio_2, strain_name,
                     time_hours_json, mean_od_json, sd_od_json, n_replicates,
                     condition_name, variation_desc, variation_overrides_json,
-                    composition_json, composition_group_id, is_control)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    composition_json, composition_group_id, is_control,
+                    raw_od_replicates_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     experiment_id,
                     group_code,
@@ -387,13 +403,14 @@ class GrowthDB:
                     json.dumps(time_hours),
                     json.dumps(mean_values),
                     json.dumps(sd_values),
-                    sample_info.get("n_replicates", 3),
+                    n_reps,
                     condition_name,
                     variation_desc,
                     variation_overrides_json,
                     composition_json,
                     composition_group_id,
                     is_control_flag,
+                    raw_replicates_json,
                 ),
             )
             curve_count += 1
